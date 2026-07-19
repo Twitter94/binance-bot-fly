@@ -1,37 +1,26 @@
-from fastapi import FastAPI, HTTPException
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
 import os
-import uvicorn
+from fastapi import FastAPI
+from binance.client import Client
 
-app = FastAPI(title="Binance Bot REAL")
+app = FastAPI()
 
-# Ambil API dari Fly Secrets. JANGAN TARUH KEY DISINI
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 
-# testnet=False = DUIT BENERAN
-client = Client(API_KEY, API_SECRET, testnet=False)
+client = Client(API_KEY, API_SECRET)
 
 @app.get("/")
-def home():
+def root():
     return {"status": "ok", "message": "Bot Binance REAL Jalan"}
 
 @app.get("/balance")
 def get_balance():
-    try:
-        account = client.get_account()
-        return {"status": "success", "balance": account['balances']}
-    except BinanceAPIException as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    balance = client.get_asset_balance(asset='USDT')
+    return {"USDT": balance}
 
-@app.post("/buy")
-def market_buy(symbol: str, quantity: float):
+def market_sell(symbol: str):
     try:
-        order = client.order_market_buy(symbol=symbol, quantity=quantity)
-        return {"status": "success", "order": order}
-    except BinanceAPIException as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.post("/sell")
-def market_sell(symbol: str
+        order = client.order_market_sell(symbol=symbol)
+        return order
+    except Exception as e:
+        return {"error": str(e)}
