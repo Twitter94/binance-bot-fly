@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 import os
+import uvicorn
 
 app = FastAPI(title="Binance Bot")
 
@@ -9,7 +10,7 @@ app = FastAPI(title="Binance Bot")
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 
-# testnet=True = pake duit palsu. Kalau mau real ganti False
+# testnet=True = pake duit palsu. Kalau mau real ganti jadi False
 client = Client(API_KEY, API_SECRET, testnet=True)
 
 @app.get("/")
@@ -29,4 +30,8 @@ def market_buy(symbol: str, quantity: float):
         order = client.order_market_buy(symbol=symbol, quantity=quantity)
         return {"status": "success", "order": order}
     except BinanceAPIException as e:
-        raise HTTPException(status_code=400, detail
+        raise HTTPException(status_code=400, detail=str(e))
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
