@@ -4,23 +4,24 @@ from binance.exceptions import BinanceAPIException
 import os
 import uvicorn
 
-app = FastAPI(title="Binance Bot")
+app = FastAPI(title="Binance Bot REAL")
 
-# Ambil dari Fly Secrets. Jangan taruh key disini
+# Ambil API dari Fly Secrets. JANGAN TARUH KEY DISINI
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_SECRET_KEY")
 
-# testnet=True = pake duit palsu. Kalau mau real ganti jadi False
-client = Client(API_KEY, API_SECRET, testnet=True)
+# testnet=False = DUIT BENERAN
+client = Client(API_KEY, API_SECRET, testnet=False)
 
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "Bot Binance Jalan"}
+    return {"status": "ok", "message": "Bot Binance REAL Jalan"}
 
 @app.get("/balance")
 def get_balance():
     try:
-        return client.get_account()
+        account = client.get_account()
+        return {"status": "success", "balance": account['balances']}
     except BinanceAPIException as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -32,6 +33,5 @@ def market_buy(symbol: str, quantity: float):
     except BinanceAPIException as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+@app.post("/sell")
+def market_sell(symbol: str
