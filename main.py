@@ -84,8 +84,8 @@ def kirim_status():
         profit_bersih = profit_kotor - (profit_kotor * FEE_EST * 2)
         est_profit += profit_bersih
 
-    pesan = f"📊 *STATUS v5.23*\n"
-    pesan += f"{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: ${harga:.2f}\n" # <-- UBAH STOP JADI PAUSE
+    pesan = f"📊 *STATUS v5.24*\n" # <-- UBAH VERSI
+    pesan += f"{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: ${harga:.2f}\n"
     pesan += f"SALDO: ${saldo:.2f} | GRID: ${GRID:.2f}\n"
     pesan += f"LOT: ${LOT} | Posisi: {posisi}\n\n"
     pesan += f"📍 *POSISI*\n"
@@ -146,7 +146,7 @@ def cek_command_telegram():
                         continue
                     if text == "status": kirim_status()
                     if text == "start": RUNNING = True; send_telegram("✅ *JALAN*")
-                    if text == "stop": RUNNING = False; send_telegram("🛑 *PAUSE*") # <-- UBAH STOP JADI PAUSE
+                    if text == "stop": RUNNING = False; send_telegram("🛑 *PAUSE*")
                     if text == "ganti lot": WAITING_FOR_LOT = True; send_telegram(f"💰 `LOT Sekarang: ${LOT}`\nKirim angka baru:")
         except: time.sleep(3)
 
@@ -157,7 +157,7 @@ def get_harga_binance():
     return harga_sekarang
 
 def place_buy(buy_price):
-    global area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0 # <-- TAMBAH NOTIF_SALDO_0
+    global area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0
     if buy_price <= 0: return
     with data_lock:
         if not RUNNING: return
@@ -166,18 +166,18 @@ def place_buy(buy_price):
         if str(buy_price) in slots: return
         saldo = get_binance_balance()
 
-        # <-- 2. LOGIKA BARU DIMULAI DARI SINI
+        # <-- LOGIKA BARU ANTI MATI
         if saldo <= 0:
             if NOTIF_SALDO_0 == False:
-                send_telegram(f"⚠️ *PAUSE* `Saldo 0 - Menunggu deposit`")
+                send_telegram(f"⚠️ *SALDO 0* `Nunggu deposit... Bot tetep jalan`")
                 NOTIF_SALDO_0 = True
-            RUNNING = False; return
+            # RUNNING = False; return <-- UDAH DIKOMEN
         elif saldo < LOT:
             if NOTIF_SALDO_KURANG == False:
-                send_telegram(f"⚠️ *PAUSE* `Saldo kurang`")
+                send_telegram(f"⚠️ *SALDO KURANG* `Nunggu deposit... Bot tetep jalan`")
                 NOTIF_SALDO_KURANG = True
-            RUNNING = False; return
-        # <-- SELESAI LOGIKA BARU
+            # RUNNING = False; return <-- UDAH DIKOMEN
+        # <-- SELESAI
 
         NOTIF_SALDO_KURANG = False
         NOTIF_SALDO_0 = False
@@ -189,9 +189,6 @@ def place_buy(buy_price):
 def proses_trading():
     global last_grid_buy, last_grid_time, area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0
     if harga_sekarang == 0: return
-    # <-- 3. RESET NOTIF PAS LANJUT
-    if not RUNNING and get_binance_balance() >= LOT:
-        RUNNING = True; NOTIF_SALDO_KURANG = False; NOTIF_SALDO_0 = False; send_telegram("✅ *LANJUT OTOMATIS*")
     grid_terdekat = round(harga_sekarang / GRID) * GRID
     if grid_terdekat!= last_grid_buy and (int(grid_terdekat / GRID) * GRID) not in area_yg_aktif and time.time() - last_grid_time > 3:
         place_buy(grid_terdekat); last_grid_buy = grid_terdekat; last_grid_time = time.time()
@@ -218,16 +215,16 @@ app = Flask(__name__) # <-- TAMBAHAN 2
 def health():
     return "OK", 200
 
-def run_bot(): # <-- TAMBAHAN 4: PINDAHIN WHILE TRUE KE SINI
+def run_bot(): # <-- TAMBAHAN 4
     slots = load_slots()
     get_atr()
     time.sleep(1)
-    send_telegram(f"🤖 *BOT v5.23 RILL*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
+    send_telegram(f"🤖 *BOT v5.24 RILL ANTI MATI*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
     harga_awal = get_harga_binance()
     if not slots and RUNNING and harga_awal > 0: place_buy(round(harga_awal / GRID) * GRID)
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
     threading.Thread(target=cek_command_telegram, daemon=True).start()
-    print("BOT v5.23 AKTIF")
+    print("BOT v5.24 AKTIF")
 
     while True:
         try:
