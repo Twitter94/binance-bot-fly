@@ -16,7 +16,7 @@ BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
 BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 250; GRID_MAX = 1000
+GRID_MIN = 1,5; GRID_MAX = 8
 GRID = 500; TP = 500
 harga_sekarang = 0
 
