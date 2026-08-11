@@ -8,7 +8,7 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR = os.environ["PAIR"]
 LOT = float(os.environ["LOT"])
-FEE = float(os.environ["FEE"])
+FEE = 0.001
 FILE_SLOTS = os.environ["FILE"]
 FILE_ENV = ".env"
 
