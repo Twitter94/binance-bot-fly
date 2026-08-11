@@ -1,6 +1,9 @@
 app = "bahaya"
 primary_region = "sin"
 
+[processes]
+app = "python main.py"
+
 [http_service]
 auto_start_machines = true
 auto_stop_machines = false
