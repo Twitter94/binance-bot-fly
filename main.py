@@ -16,8 +16,8 @@ BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
 BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 1.5; GRID_MAX = 5
-GRID = 2; TP = 2
+GRID_MIN = 1.5; GRID_MAX = 7
+GRID = 3; TP = 3
 harga_sekarang = 0
 last_atr = 0
 last_atr_check = 0
@@ -103,6 +103,21 @@ def binance_order(side, price, qty):
                 fee_usdt += fee_qty * float(p['price'])
     return r, fee_usdt
 
+def binance_market_sell(qty):
+    ts = int(time.time() * 1000)
+    params = {"symbol": PAIR,"side": "SELL","type": "MARKET","quantity": f"{qty:.6f}","timestamp": ts}
+    query = binance_sign(params)
+    r = session.post(f"{BASE_URL}/api/v3/order?{query}").json()
+    fee_usdt = 0
+    if 'fills' in r:
+        for fill in r['fills']:
+            fee_qty = float(fill['commission'])
+            if fill['commissionAsset'] == 'USDT': fee_usdt += fee_qty
+            else:
+                p = session.get(f"{BASE_URL}/api/v3/ticker/price?symbol={fill['commissionAsset']}USDT", timeout=2).json()
+                fee_usdt += fee_qty * float(p['price'])
+    return r, fee_usdt
+
 def send_telegram(msg, keyboard=False):
     try:
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
@@ -124,7 +139,7 @@ def kirim_status():
         profit_bersih = profit_kotor - (profit_kotor * FEE_EST * 2)
         est_profit += profit_bersih
 
-    pesan = f"📊 *STATUS v5.35 ATR%*"
+    pesan = f"📊 *STATUS v5.37 ANTI NYANGKUT*"
     pesan += f"\n{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: ${harga:.2f}"
     pesan += f"\nSALDO: ${saldo:.2f} | GRID: ${GRID:.2f}"
     pesan += f"\nLOT: ${LOT} | Posisi: {posisi}\n\n"
@@ -163,18 +178,15 @@ def get_atr(force=False):
             harus_update = False
             alasan = ""
 
-            # CEK 1: NAIK 20% ATAU TURUN 20%
             if last_atr > 0:
                 naik = atr_baru > last_atr
                 turun = atr_baru < last_atr
                 perubahan = abs(atr_baru - last_atr) / last_atr
-
                 if perubahan > 0.20:
                     harus_update = True
                     if naik: alasan = f"📈 ATR NAIK {perubahan*100:.1f}%"
                     if turun: alasan = f"📉 ATR TURUN {perubahan*100:.1f}%"
 
-            # CEK 2: DIPAKSA JAM 00
             if force:
                 harus_update = True
                 alasan = "🔄 UPDATE HARIAN JAM 00"
@@ -187,11 +199,13 @@ def get_atr(force=False):
                 new_slots = {buy: float(buy) + new_grid for buy in slots.keys()}
                 save_slots(new_slots)
                 area_yg_aktif.clear()
+                GRID = max(GRID_MIN, min(atr_baru * ATR_MULTIPLIER, GRID_MAX))
+                TP = GRID
+                send_telegram(f"🔄 *UPDATE ATR*\n`{alasan}`\n`ATR 14H: ${atr_baru:.2f}`\n`GRID BARU: ${GRID:.2f} | TP: ${TP:.2f}`")
 
             GRID = max(GRID_MIN, min(atr_baru * ATR_MULTIPLIER, GRID_MAX))
             TP = GRID
             last_atr = atr_baru
-            send_telegram(f"🔄 *UPDATE ATR*\n`{alasan if alasan else 'Cek Rutin'}`\n`ATR 14H: ${atr_baru:.2f}`\n`GRID BARU: ${GRID:.2f} | TP: ${TP:.2f}`")
             return
         except: time.sleep(2)
     send_telegram(f"❌ *GAGAL UPDATE ATR 3x*")
@@ -256,9 +270,36 @@ def proses_trading():
     if harga_sekarang == 0: return
     if not RUNNING and get_binance_balance() >= LOT:
         RUNNING = True; NOTIF_SALDO_KURANG = False; NOTIF_SALDO_0 = False; send_telegram("✅ *LANJUT OTOMATIS*")
+
+    # ===== ANTI NYANGKUT: CEK TP KELEWAT DULU =====
+    slots = load_slots()
+    to_delete_kecepetan = []
+    for buy_str, tp_target in list(slots.items()):
+        buy = float(buy_str)
+        tp = float(tp_target)
+        if harga_sekarang > tp: # HARGA UDAH LEWAT TP
+            qty = LOT / buy
+            order, fee = binance_market_sell(qty) # JUAL MARKET INSTAN
+            if 'orderId' in order:
+                avg_price = float(order['fills'][0]['price']) if 'fills' in order else harga_sekarang
+                hasil = avg_price * qty
+                profit = hasil - LOT - fee
+                to_delete_kecepetan.append(buy_str)
+                area_yg_aktif.remove(int(buy / GRID) * GRID)
+                send_telegram(f"🚨 *TP KELEWAT! JUAL INSTAN*\n`Buy @${buy:.0f} -> Jual @${avg_price:.0f}`\n`Profit: ${profit:.4f}`")
+                reentry = round(avg_price, 2) # reentry di harga jual
+                if (int(reentry / GRID) * GRID) not in area_yg_aktif: place_buy(reentry)
+
+    if to_delete_kecepetan:
+        slots = load_slots()
+        for d in to_delete_kecepetan: del slots[d]
+        save_slots(slots)
+    # ===== SELESAI ANTI NYANGKUT =====
+
     grid_terdekat = round(harga_sekarang / GRID) * GRID
     if grid_terdekat!= last_grid_buy and (int(grid_terdekat / GRID) * GRID) not in area_yg_aktif and time.time() - last_grid_time > 3:
         place_buy(grid_terdekat); last_grid_buy = grid_terdekat; last_grid_time = time.time()
+
     slots = load_slots(); to_delete = []
     for buy_str, tp_target in list(slots.items()):
         buy, tp = float(buy_str), float(tp_target)
@@ -283,28 +324,25 @@ def health(): return "OK", 200
 def run_bot():
     init_db()
     slots = load_slots()
-    get_atr(force=True) # Force pertama kali
+    get_atr(force=True)
     time.sleep(1)
-    send_telegram(f"🤖 *BOT v5.35 ATR%*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
+    send_telegram(f"🤖 *BOT v5.37 ANTI NYANGKUT*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
     harga_awal = get_harga_binance()
     if not slots and RUNNING and harga_awal > 0: place_buy(round(harga_awal / GRID) * GRID)
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
     threading.Thread(target=cek_command_telegram, daemon=True).start()
-    print("BOT v5.35 AKTIF")
+    print("BOT v5.37 AKTIF")
 
     while True:
         try:
             get_harga_binance(); proses_trading()
 
             now = datetime.now(WIB)
-            # CEK WAJIB JAM 00
             if now.hour == ATR_UPDATE_HOUR and now.minute == 0 and now.second < 5:
                 get_atr(force=True)
                 time.sleep(5)
 
-            # CEK 20% SETIAP 60 DETIK
             get_atr(force=False)
-
             time.sleep(1)
         except: time.sleep(5)
 
