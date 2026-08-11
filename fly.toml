@@ -2,14 +2,11 @@ app = "bahaya"
 primary_region = "sin"
 
 [processes]
-app = "python main.py" # TAMBAHIN INI
+app = "python main.py"
 
 [[restart]]
 policy = "always"
-processes = ["app"]
-retries = 10
 
 [[vm]]
 cpus = 1
 memory = "256mb"
-memory_mb = 256
