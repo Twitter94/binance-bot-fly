@@ -1,4 +1,10 @@
-import time, os, requests, json, threading, hmac, hashlib
+import time
+import os
+import requests
+import json
+import threading
+import hmac
+import hashlib
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 from flask import Flask
@@ -21,8 +27,8 @@ BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
 BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 1.5; GRID_MAX = 5
-GRID = 2; TP = 2
+GRID_MIN = 1.5; GRID_MAX = 7
+GRID = 2.5; TP = 2.5
 harga_sekarang = 0
 last_atr = 0
 last_atr_check = 0
@@ -339,6 +345,8 @@ def run_bot():
             time.sleep(1)
         except: time.sleep(5)
 
+# ===== SUPIR BARU: PINDAH KE LUAR BIAR PASTI JALAN =====
+threading.Thread(target=run_bot, daemon=True).start()
+
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
