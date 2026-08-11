@@ -1,7 +1,8 @@
-import time, os, requests, json, threading, hmac, hashlib, sqlite3
+import time, os, requests, json, threading, hmac, hashlib
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 from flask import Flask
+from supabase import create_client, Client # TAMBAHAN
 load_dotenv('.env_rill')
 
 WIB = timezone(timedelta(hours=7))
@@ -9,7 +10,11 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR = os.environ["PAIR"]
 LOT = float(os.environ["LOT"])
-DB_FILE = "/data/bot.db"
+
+# GANTI DB_FILE JADI SUPABASE
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 BINANCE_API_KEY = os.environ["BINANCE_API_KEY"]
 BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
@@ -17,7 +22,7 @@ BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
 GRID_MIN = 1.5; GRID_MAX = 7
-GRID = 3; TP = 3
+GRID = 2.5; TP = 2.5
 harga_sekarang = 0
 last_atr = 0
 last_atr_check = 0
@@ -35,27 +40,16 @@ FEE_EST = 0.001
 NOTIF_SALDO_KURANG = False
 NOTIF_SALDO_0 = False
 
-def init_db():
-    os.makedirs("/data", exist_ok=True)
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("CREATE TABLE IF NOT EXISTS slots (buy_price REAL PRIMARY KEY, tp_price REAL)")
-    conn.close()
-
+# GANTI FUNGSI DB KE SUPABASE
 def load_slots():
-    init_db()
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute("SELECT buy_price, tp_price FROM slots").fetchall()
-    conn.close()
-    return {str(row[0]): row[1] for row in rows}
+    res = supabase.table("slots").select("*").execute()
+    return {str(row["buy_price"]): row["tp_price"] for row in res.data}
 
 def save_slots(slots):
-    init_db()
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("DELETE FROM slots")
-    data = [(float(buy), tp) for buy, tp in slots.items()]
-    conn.executemany("INSERT INTO slots VALUES (?,?)", data)
-    conn.commit()
-    conn.close()
+    supabase.table("slots").delete().neq("buy_price", -1).execute() # hapus semua dulu
+    data = [{"buy_price": float(buy), "tp_price": tp} for buy, tp in slots.items()]
+    if data:
+        supabase.table("slots").insert(data).execute()
 
 def binance_sign(params={}):
     query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
@@ -322,11 +316,10 @@ app = Flask(__name__)
 def health(): return "OK", 200
 
 def run_bot():
-    init_db()
-    slots = load_slots()
+    slots = load_slots() # GANTI: langsung load dari supabase
     get_atr(force=True)
     time.sleep(1)
-    send_telegram(f"🤖 *BOT v5.37 ANTI NYANGKUT*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
+    send_telegram(f"🤖 *BOT v5.37 ANTI NYANGKUT - SUPABASE*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
     harga_awal = get_harga_binance()
     if not slots and RUNNING and harga_awal > 0: place_buy(round(harga_awal / GRID) * GRID)
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
