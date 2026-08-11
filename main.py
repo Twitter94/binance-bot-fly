@@ -1,7 +1,6 @@
 import time, os, requests, json, threading, hmac, hashlib
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
-from flask import Flask
 from supabase import create_client, Client # TAMBAHAN
 load_dotenv('.env_rill')
 
@@ -21,8 +20,8 @@ BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
 BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 1.5; GRID_MAX = 7
-GRID = 2.5; TP = 2.5
+GRID_MIN = 1.5; GRID_MAX = 5
+GRID = 2; TP = 2
 harga_sekarang = 0
 last_atr = 0
 last_atr_check = 0
@@ -311,10 +310,6 @@ def proses_trading():
         for d in to_delete: del slots[d]
         save_slots(slots)
 
-app = Flask(__name__)
-@app.route("/")
-def health(): return "OK", 200
-
 def run_bot():
     slots = load_slots() # GANTI: langsung load dari supabase
     get_atr(force=True)
@@ -340,5 +335,4 @@ def run_bot():
         except: time.sleep(5)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=8080)
+    run_bot() # CUMA IKI SING BEDA. LIANE PODO
