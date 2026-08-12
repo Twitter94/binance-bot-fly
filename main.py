@@ -42,7 +42,7 @@ area_yg_aktif = []
 data_lock = threading.Lock()
 session = requests.Session()
 session.headers.update({'X-MBX-APIKEY': BINANCE_API_KEY})
-FEE_EST = 0.001 # udah gak kepake buat notif, cuma cadangan
+FEE_EST = 0.001
 NOTIF_SALDO_KURANG = False
 NOTIF_SALDO_0 = False
 
@@ -71,7 +71,7 @@ def get_binance_balance():
     except: pass
     return 0
 
-def get_order_details(symbol, order_id): # BARU
+def get_order_details(symbol, order_id):
     try:
         ts = int(time.time() * 1000)
         query = binance_sign({"symbol": symbol, "orderId": order_id, "timestamp": ts})
@@ -79,7 +79,7 @@ def get_order_details(symbol, order_id): # BARU
         return r
     except: return None
 
-def hitung_dari_fills(order_data): # BARU - Ini inti 100% persis binance
+def hitung_dari_fills(order_data): # 100% persis binance
     if not order_data or 'fills' not in order_data or len(order_data['fills']) == 0:
         return 0, 0, 0, 0
 
@@ -125,7 +125,7 @@ def binance_order(side, price, qty):
     ts = int(time.time() * 1000)
     params = {"symbol": PAIR,"side": side,"type": "LIMIT","timeInForce": "GTC","quantity": f"{qty:.6f}","price": f"{price:.2f}","timestamp": ts}
     query = binance_sign(params)
-    return session.post(f"{BASE_URL}/api/v3/order?{query}").json() # gak usah hitung fee disini
+    return session.post(f"{BASE_URL}/api/v3/order?{query}").json()
 
 def binance_market_sell(qty):
     ts = int(time.time() * 1000)
@@ -140,16 +140,16 @@ def send_telegram(msg, keyboard=False):
         session.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=data, timeout=2)
     except: pass
 
-def kirim_status(): # UDAH 100% DARI BINANCE
+def kirim_status():
     harga = get_harga_binance()
     saldo = get_binance_balance()
     slots = load_slots()
     posisi = len(slots)
-    est_profit = 0 # ini tetep estimasi karena belum kejual
+    est_profit = 0
 
     pesan = f"📊 *STATUS v5.39 DCA ON*"
     pesan += f"\n{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: `${harga:.2f}`"
-    pesan += f"\nSALDO: `${saldo:.4f}` <- Dari Binance API" # 4 digit biar presisi
+    pesan += f"\nSALDO: `${saldo:.4f}` <- Dari API" # UDAH NETRAL
     pesan += f"\nGRID: `${GRID:.2f}` | LOT: `${LOT}` | Posisi: `{posisi}`\n\n"
     pesan += f"📍 *POSISI*\n"
     if posisi == 0: pesan += "Kosong"
@@ -277,7 +277,6 @@ def place_buy(buy_price):
         if 'orderId' not in order: return
         area_yg_aktif.append(int(buy_price / GRID) * GRID); slots[str(buy_price)] = tp_price
     save_slots(slots)
-    # NOTIF BUY 100% DARI BINANCE
     detail = get_order_details(PAIR, order['orderId'])
     qty, quote, fee, avg = hitung_dari_fills(detail)
     send_telegram(f"🟢 *BUY TERISI*\n`Harga: ${avg:.4f}`\n`Qty: {qty:.6f}`\n`Modal: ${quote:.4f}`\n`Fee: ${fee:.4f}`")
@@ -346,7 +345,7 @@ def run_bot():
     slots = load_slots()
     get_atr(force=True)
     time.sleep(1)
-    send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% BINANCE*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
+    send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% API*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True) # UDAH NETRAL
     harga_awal = get_harga_binance()
     if not slots and RUNNING and harga_awal > 0: place_buy(round(harga_awal / GRID) * GRID)
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
