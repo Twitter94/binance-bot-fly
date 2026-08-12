@@ -346,8 +346,11 @@ def run_bot():
     get_atr(force=True)
     time.sleep(1)
     send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% API*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True) # UDAH NETRAL
+
     harga_awal = get_harga_binance()
-    if not slots and RUNNING and harga_awal > 0: place_buy(round(harga_awal / GRID) * GRID)
+    grid_awal = round(harga_awal / GRID) * GRID # TAMBAHAN 1
+    if RUNNING and harga_awal > 0: place_buy(grid_awal) # TAMBAHAN 2 LANGSUNG BUY
+
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
     threading.Thread(target=cek_command_telegram, daemon=True).start()
     print("BOT v5.39 AKTIF")
