@@ -50,9 +50,9 @@ def load_slots():
     res = supabase.table("slots").select("*").execute()
     return {str(row["buy_price"]): row["tp_price"] for row in res.data}
 
-def save_slots(slots):
+def save_slots(slots): # INI DOANG YG DIRUBAH
     supabase.table("slots").delete().neq("buy_price", -1).execute()
-    data = [{"buy_price": float(buy), "tp_price": tp} for buy, tp in slots.items()]
+    data = [{"buy_price": float(buy), "tp_price": tp, "pair": PAIR} for buy, tp in slots.items()]
     if data:
         supabase.table("slots").insert(data).execute()
 
@@ -120,7 +120,7 @@ def binance_market_sell(qty):
     query = binance_sign(params)
     return session.post(f"{BASE_URL}/api/v3/order?{query}").json()
 
-def binance_market_buy(usdt_amount): # TAMBAHAN 1: BUAT INSTAN BUY
+def binance_market_buy(usdt_amount):
     ts = int(time.time() * 1000)
     params = {"symbol": PAIR,"side": "BUY","type": "MARKET","quoteOrderQty": f"{usdt_amount:.2f}","timestamp": ts}
     query = binance_sign(params)
@@ -277,7 +277,6 @@ def run_bot():
     slots = load_slots(); get_atr(force=True); time.sleep(1)
     send_telegram(f"🤖 *BOT v5.39 INFINITE GRID*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
 
-    # TAMBAHAN 2: INSTAN MARKET BUY + LANGSUNG MASUK DAFTAR
     harga_awal = get_harga_binance()
     if not slots and RUNNING and harga_awal > 0:
         order = binance_market_buy(LOT)
