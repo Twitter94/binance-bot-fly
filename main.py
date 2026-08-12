@@ -27,7 +27,7 @@ BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
 BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 1.5; GRID_MAX = 5 
+GRID_MIN = 1.5; GRID_MAX = 7 
 GRID = 1.5; TP = 1.5
 BUFFER_FEE = 0.003 # 0.3% buffer biar pasti untung
 MAX_GAGAL_SELL = 3
