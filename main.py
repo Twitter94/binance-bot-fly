@@ -133,6 +133,12 @@ def binance_market_sell(qty):
     query = binance_sign(params)
     return session.post(f"{BASE_URL}/api/v3/order?{query}").json()
 
+def binance_market_buy(usdt_amount): # TAMBAHAN BARU
+    ts = int(time.time() * 1000)
+    params = {"symbol": PAIR,"side": "BUY","type": "MARKET","quoteOrderQty": f"{usdt_amount:.2f}","timestamp": ts}
+    query = binance_sign(params)
+    return session.post(f"{BASE_URL}/api/v3/order?{query}").json()
+
 def send_telegram(msg, keyboard=False):
     try:
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
@@ -345,11 +351,23 @@ def run_bot():
     slots = load_slots()
     get_atr(force=True)
     time.sleep(1)
-    send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% API*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True) # UDAH NETRAL
+    send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% API*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
 
+    # ========== INSTAN MARKET BUY PAS START ==========
     harga_awal = get_harga_binance()
-    grid_awal = round(harga_awal / GRID) * GRID # TAMBAHAN 1
-    if RUNNING and harga_awal > 0: place_buy(grid_awal) # TAMBAHAN 2 LANGSUNG BUY
+    if RUNNING and harga_awal > 0:
+        grid_awal = int(harga_awal / GRID) * GRID # dibulatkan ke bawah
+        order = binance_market_buy(LOT) # INSTAN
+        if 'orderId' in order:
+            detail = get_order_details(PAIR, order['orderId'])
+            qty, quote, fee, avg = hitung_dari_fills(detail)
+            area_yg_aktif.append(int(grid_awal / GRID) * GRID)
+            slots[str(round(avg,2))] = round(avg,2) + TP
+            save_slots(slots)
+            send_telegram(f"🟢 *INSTAN BUY TERISI*\n`Grid: ${grid_awal:.2f}`\n`Harga Isi: ${avg:.4f}`\n`Qty: {qty:.6f}`\n`Modal: ${quote:.4f}`")
+        else:
+            send_telegram(f"❌ *GAGAL INSTAN BUY*\n`Error: {order.get('msg')}`")
+    # =================================================
 
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
     threading.Thread(target=cek_command_telegram, daemon=True).start()
