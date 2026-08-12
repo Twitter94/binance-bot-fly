@@ -133,12 +133,6 @@ def binance_market_sell(qty):
     query = binance_sign(params)
     return session.post(f"{BASE_URL}/api/v3/order?{query}").json()
 
-def binance_market_buy(usdt_amount): # TAMBAHAN 1
-    ts = int(time.time() * 1000)
-    params = {"symbol": PAIR,"side": "BUY","type": "MARKET","quoteOrderQty": f"{usdt_amount:.2f}","timestamp": ts}
-    query = binance_sign(params)
-    return session.post(f"{BASE_URL}/api/v3/order?{query}").json()
-
 def send_telegram(msg, keyboard=False):
     try:
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
@@ -352,20 +346,8 @@ def run_bot():
     get_atr(force=True)
     time.sleep(1)
     send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% API*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True) # UDAH NETRAL
-
-    # TAMBAHAN 2: INSTAN MARKET BUY ANTI DOBEL
     harga_awal = get_harga_binance()
-    if RUNNING and harga_awal > 0:
-        grid_awal = int(harga_awal / GRID) * GRID
-        if grid_awal not in area_yg_aktif: # CEK DULU BIAR GAK DOBEL
-            binance_market_buy(LOT)
-            area_yg_aktif.append(grid_awal) # DAFTARIN BIAR 3 DETIK LAGI GAK BUY LAGI
-
-    # HAPUS 2 BARIS LAMA INI
-    # harga_awal = get_harga_binance()
-    # grid_awal = round(harga_awal / GRID) * GRID # TAMBAHAN 1
-    # if RUNNING and harga_awal > 0: place_buy(grid_awal) # TAMBAHAN 2 LANGSUNG BUY
-
+    if not slots and RUNNING and harga_awal > 0: place_buy(round(harga_awal / GRID) * GRID)
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
     threading.Thread(target=cek_command_telegram, daemon=True).start()
     print("BOT v5.39 AKTIF")
