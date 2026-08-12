@@ -133,7 +133,7 @@ def binance_market_sell(qty):
     query = binance_sign(params)
     return session.post(f"{BASE_URL}/api/v3/order?{query}").json()
 
-def binance_market_buy(usdt_amount): # TAMBAHAN BARU
+def binance_market_buy(usdt_amount): # TAMBAHAN 1
     ts = int(time.time() * 1000)
     params = {"symbol": PAIR,"side": "BUY","type": "MARKET","quoteOrderQty": f"{usdt_amount:.2f}","timestamp": ts}
     query = binance_sign(params)
@@ -351,23 +351,20 @@ def run_bot():
     slots = load_slots()
     get_atr(force=True)
     time.sleep(1)
-    send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% API*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True)
+    send_telegram(f"🤖 *BOT v5.39 DCA ON - 100% API*\n`GRID: ${GRID:.2f} | LOT: ${LOT}`", keyboard=True) # UDAH NETRAL
 
-    # ========== INSTAN MARKET BUY PAS START ==========
+    # TAMBAHAN 2: INSTAN MARKET BUY ANTI DOBEL
     harga_awal = get_harga_binance()
     if RUNNING and harga_awal > 0:
-        grid_awal = int(harga_awal / GRID) * GRID # dibulatkan ke bawah
-        order = binance_market_buy(LOT) # INSTAN
-        if 'orderId' in order:
-            detail = get_order_details(PAIR, order['orderId'])
-            qty, quote, fee, avg = hitung_dari_fills(detail)
-            area_yg_aktif.append(int(grid_awal / GRID) * GRID)
-            slots[str(round(avg,2))] = round(avg,2) + TP
-            save_slots(slots)
-            send_telegram(f"🟢 *INSTAN BUY TERISI*\n`Grid: ${grid_awal:.2f}`\n`Harga Isi: ${avg:.4f}`\n`Qty: {qty:.6f}`\n`Modal: ${quote:.4f}`")
-        else:
-            send_telegram(f"❌ *GAGAL INSTAN BUY*\n`Error: {order.get('msg')}`")
-    # =================================================
+        grid_awal = int(harga_awal / GRID) * GRID
+        if grid_awal not in area_yg_aktif: # CEK DULU BIAR GAK DOBEL
+            binance_market_buy(LOT)
+            area_yg_aktif.append(grid_awal) # DAFTARIN BIAR 3 DETIK LAGI GAK BUY LAGI
+
+    # HAPUS 2 BARIS LAMA INI
+    # harga_awal = get_harga_binance()
+    # grid_awal = round(harga_awal / GRID) * GRID # TAMBAHAN 1
+    # if RUNNING and harga_awal > 0: place_buy(grid_awal) # TAMBAHAN 2 LANGSUNG BUY
 
     for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
     threading.Thread(target=cek_command_telegram, daemon=True).start()
