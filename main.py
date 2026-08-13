@@ -6,17 +6,16 @@ import threading
 import hmac
 import hashlib
 from decimal import Decimal
-from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 from supabase import create_client, Client
-load_dotenv('.env_rill')
 
+# HAPUS load_dotenv. Langsung baca dari os.environ Fly Secrets
 WIB = timezone(timedelta(hours=7))
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR = os.environ["PAIR"]
-LOT = float(os.environ["LOT"]) # Ini nanti di override otomatis
+LOT = float(os.environ.get("LOT", "10")) # kasih default biar gak error
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -27,7 +26,7 @@ BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
 BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 1.5; GRID_MAX = 7
+GRID_MIN = 1.5; GRID_MAX = 5
 GRID = 1.5; TP = 1.5
 BUFFER_FEE = 0.003 # 0.3% buffer
 MAX_GAGAL_SELL = 3
@@ -202,7 +201,7 @@ def send_telegram(msg, keyboard=False):
 def kirim_status():
     harga = get_harga_binance(); saldo = get_binance_balance(); slots = load_slots(); posisi = len(slots)
     fee_rate = get_binance_fee() * 100
-    pesan = f"📊 *STATUS v5.62 ON BUY LOT*"
+    pesan = f"📊 *STATUS v5.64 FLYIO*"
     pesan += f"\n{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: `${harga:.2f}`"
     pesan += f"\nSALDO: `${saldo:.4f}`"
     pesan += f"\nGRID: `${GRID:.2f}` | LOT: `${LOT}` | Fee: `{fee_rate:.3f}%` | Posisi: `{posisi}`\n\n"
@@ -220,10 +219,8 @@ def kirim_status():
 def save_env_lot(new_lot):
     global LOT
     LOT_LAMA = LOT; LOT = float(new_lot)
-    lines = open(".env_rill", "r").readlines()
-    f = open(".env_rill", "w")
-    for line in lines: f.write(f"LOT={new_lot}\n" if line.startswith("LOT=") else line)
-    f.close()
+    # DI FLY.IO GAK BISA NULIS FILE. JADI CUMA UPDATE VARIABLE
+    print(f"[LOT UPDATE] {LOT_LAMA} -> {LOT}")
     return LOT_LAMA
 
 def get_atr(force=False):
@@ -276,15 +273,15 @@ def get_harga_binance():
     return harga_sekarang
 
 def place_buy(buy_price):
-    global area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0, LOT # <--- TAMBAH LOT
+    global area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0, LOT
     if buy_price <= 0: return
     with data_lock:
         if not RUNNING: return
         if buy_price in area_gagal: return
 
         # === HITUNG LOT OTOMATIS PAS MAU BUY ===
-        LOT = hitung_lot_otomatis(buy_price) # <--- TAMBAH INI
-        save_env_lot(LOT) # <--- TAMBAH INI
+        LOT = hitung_lot_otomatis(buy_price)
+        save_env_lot(LOT)
 
         tp_price = hitung_tp(buy_price)
         buy_price = round(buy_price, 2); tp_price = round(tp_price, 2)
@@ -363,9 +360,6 @@ def cek_tp_walaupun_pause():
 def proses_trading():
     global last_grid_buy, last_grid_time, area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0, LAST_FAIL_TIME, area_gagal, slot_gagal_sell, LOT
     if harga_sekarang == 0: return
-
-    # === HAPUS BLOK UPDATE 5 MENIT ===
-
     saldo = get_binance_balance()
     cek_tp_walaupun_pause()
 
@@ -435,10 +429,8 @@ def run_bot():
         get_atr(force=True)
         harga_awal = get_harga_binance()
         
-        # === HAPUS AUTO SET LOT DI AWAL ===
-        
         time.sleep(1)
-        send_telegram(f"🤖 *BOT v5.62 ON BUY LOT*\n`HARGA: ${harga_awal:.2f}`", keyboard=True)
+        send_telegram(f"🤖 *BOT v5.64 FLYIO*\n`HARGA: ${harga_awal:.2f}`", keyboard=True)
         
         if not slots and RUNNING and harga_awal > 0:
             buy_price = round(harga_awal / GRID) * GRID
@@ -451,7 +443,7 @@ def run_bot():
 
         for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
         threading.Thread(target=cek_command_telegram, daemon=True).start()
-        print("BOT v5.62 AKTIF")
+        print("BOT v5.64 AKTIF")
 
         while True:
             try:
