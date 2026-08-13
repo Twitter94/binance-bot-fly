@@ -25,7 +25,7 @@ BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
 BASE_URL = "https://api.binance.com"
 
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 1.5; GRID_MAX = 5
+GRID_MIN = 1.5; GRID_MAX = 7
 GRID = 1.5; TP = 1.5
 BUFFER_FEE = 0.003
 MAX_GAGAL_SELL = 3
@@ -68,7 +68,7 @@ def hitung_lot_otomatis(harga):
     fee_sell = modal_dasar * fee_rate
     buffer = modal_dasar * BUFFER_FEE
     lot_baru = modal_dasar + fee_buy + fee_sell + buffer
-    lot_baru = max(6, round(lot_baru, 2))
+    lot_baru = max(5, round(lot_baru, 2))
     return lot_baru
 
 def binance_request(method, url, **kwargs):
