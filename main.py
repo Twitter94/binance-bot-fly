@@ -10,12 +10,11 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 from supabase import create_client, Client
 
-# HAPUS load_dotenv. Langsung baca dari os.environ Fly Secrets
 WIB = timezone(timedelta(hours=7))
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR = os.environ["PAIR"]
-LOT = float(os.environ.get("LOT", "10")) # kasih default biar gak error
+LOT = float(os.environ.get("LOT", "10"))
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -28,9 +27,9 @@ BASE_URL = "https://api.binance.com"
 ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
 GRID_MIN = 1.5; GRID_MAX = 5
 GRID = 1.5; TP = 1.5
-BUFFER_FEE = 0.003 # 0.3% buffer
+BUFFER_FEE = 0.003
 MAX_GAGAL_SELL = 3
-QTY_ACUAN = 0.01 # <--- PATOKAN: 1x buy = 0.01 coin. Bisa ganti ke 0.005
+QTY_ACUAN = 0.01
 harga_sekarang = 0
 last_atr = 0
 last_atr_check = 0
@@ -47,7 +46,7 @@ LAST_FAIL_TIME = 0
 data_lock = threading.Lock()
 session = requests.Session()
 session.headers.update({'X-MBX-APIKEY': BINANCE_API_KEY})
-FEE_EST = 0.001 # Fallback kalau gagal ambil fee asli
+FEE_EST = 0.001
 NOTIF_SALDO_KURANG = False
 NOTIF_SALDO_0 = False
 NOTIF_AWAL_SENT = False
@@ -65,7 +64,6 @@ def get_binance_fee():
     return FEE_EST
 
 def hitung_lot_otomatis(harga):
-    """LOT pas-pasan: Modal + Fee Buy + Fee Sell + Buffer. Ngikutin HARGA BUY"""
     global QTY_ACUAN
     fee_rate = get_binance_fee()
     modal_dasar = harga * QTY_ACUAN
@@ -73,7 +71,7 @@ def hitung_lot_otomatis(harga):
     fee_sell = modal_dasar * fee_rate
     buffer = modal_dasar * BUFFER_FEE
     lot_baru = modal_dasar + fee_buy + fee_sell + buffer
-    lot_baru = max(6, round(lot_baru, 2)) # Minimal 6 USDT
+    lot_baru = max(6, round(lot_baru, 2))
     return lot_baru
 
 def binance_request(method, url, **kwargs):
@@ -83,19 +81,18 @@ def binance_request(method, url, **kwargs):
             r = session.request(method, url, **kwargs)
             r.raise_for_status()
             return r.json()
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestException:
             if i == 2:
-                print(f"[BINANCE ERROR 3x] {e}")
-                return {'code': -1, 'msg': str(e)}
+                return {'code': -1, 'msg': 'Request failed 3x'}
             time.sleep(2)
     return None
 
 def hitung_tp(buy_price):
     fee_rate = get_binance_fee()
     fee_total = LOT * fee_rate * 2
-    if GRID > fee_total: 
+    if GRID > fee_total:
         return round(buy_price + GRID, 2)
-    else: 
+    else:
         return round(buy_price + GRID * (1 + BUFFER_FEE), 2)
 
 def load_slots():
@@ -121,8 +118,7 @@ def get_binance_balance():
         if 'balances' in r:
             for b in r['balances']:
                 if b['asset'] == 'USDT': return float(b['free'])
-    except Exception as e:
-        print(f"[GAGAL CEK SALDO] {e}")
+    except: pass
     return 0
 
 def get_order_details(symbol, order_id):
@@ -172,7 +168,6 @@ def binance_order(side, price, qty):
     r = binance_request("POST", f"{BASE_URL}/api/v3/order?{query}")
     if 'code' in r:
         if side == "BUY":
-            print(f"[BUY GAGAL] {PAIR} ${price} | Error: {r.get('msg')} | BOT DI PAUSE")
             RUNNING = False
             LAST_FAIL_TIME = time.time()
             area_gagal.add(price)
@@ -195,13 +190,12 @@ def send_telegram(msg, keyboard=False):
                 "resize_keyboard": True
             }
         session.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=data, timeout=3)
-    except Exception as e:
-        print(f"Gagal kirim telegram: {e}")
+    except: pass
 
 def kirim_status():
     harga = get_harga_binance(); saldo = get_binance_balance(); slots = load_slots(); posisi = len(slots)
     fee_rate = get_binance_fee() * 100
-    pesan = f"📊 *STATUS v5.64 FLYIO*"
+    pesan = f"📊 *STATUS v5.67 NO PRINT*"
     pesan += f"\n{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: `${harga:.2f}`"
     pesan += f"\nSALDO: `${saldo:.4f}`"
     pesan += f"\nGRID: `${GRID:.2f}` | LOT: `${LOT}` | Fee: `{fee_rate:.3f}%` | Posisi: `{posisi}`\n\n"
@@ -211,16 +205,14 @@ def kirim_status():
         for buy_str, tp_target in list(slots.items())[:5]:
             gagal = slot_gagal_sell.get(buy_str, 0)
             pesan += f"`BUY ${float(buy_str):.2f} -> TP ${float(tp_target):.2f}`"
-            if gagal > 0: pesan += f" `Gagal:{gagal}x`"
+            if gagal > 0: pesan += f" `G:{gagal}x`"
             pesan += "\n"
-        if posisi > 5: pesan += f"...dan {posisi-5} posisi lain"
+        if posisi > 5: pesan += f"...dan {posisi-5} lain"
     send_telegram(pesan, keyboard=True)
 
 def save_env_lot(new_lot):
     global LOT
     LOT_LAMA = LOT; LOT = float(new_lot)
-    # DI FLY.IO GAK BISA NULIS FILE. JADI CUMA UPDATE VARIABLE
-    print(f"[LOT UPDATE] {LOT_LAMA} -> {LOT}")
     return LOT_LAMA
 
 def get_atr(force=False):
@@ -242,7 +234,6 @@ def get_atr(force=False):
             GRID = new_grid
             last_atr = atr_baru; return
         except: time.sleep(2)
-    print(f"[GAGAL UPDATE ATR 3x]")
 
 def cek_command_telegram():
     global last_update_id, RUNNING, WAITING_FOR_LOT
@@ -278,11 +269,8 @@ def place_buy(buy_price):
     with data_lock:
         if not RUNNING: return
         if buy_price in area_gagal: return
-
-        # === HITUNG LOT OTOMATIS PAS MAU BUY ===
         LOT = hitung_lot_otomatis(buy_price)
         save_env_lot(LOT)
-
         tp_price = hitung_tp(buy_price)
         buy_price = round(buy_price, 2); tp_price = round(tp_price, 2)
         qty = LOT / buy_price
@@ -290,25 +278,19 @@ def place_buy(buy_price):
         if str(buy_price) in slots: return
         saldo = get_binance_balance()
         if saldo <= 0:
-            if NOTIF_SALDO_0 == False: print(f"[PAUSE] Saldo 0 - Menunggu deposit")
             NOTIF_SALDO_0 = True
             RUNNING = False; return
         elif saldo < LOT:
-            if NOTIF_SALDO_KURANG == False: print(f"[PAUSE] Saldo kurang. Butuh ${LOT} punya ${saldo:.2f}")
             NOTIF_SALDO_KURANG = True
             RUNNING = False; return
         NOTIF_SALDO_KURANG = False; NOTIF_SALDO_0 = False
-
         order = binance_order("BUY", buy_price, qty)
         if order is None: return
-
         area_yg_aktif.append(int(buy_price / GRID) * GRID); slots[str(buy_price)] = tp_price
     save_slots(slots)
-
     time.sleep(2)
     detail = get_order_details(PAIR, order['orderId'])
     qty, quote, fee, avg = hitung_dari_fills(detail)
-
     if avg == 0:
         avg = buy_price
         qty = LOT / avg
@@ -348,8 +330,6 @@ def cek_tp_walaupun_pause():
                     slot_gagal_sell[buy_str] = slot_gagal_sell.get(buy_str, 0) + 1
                     if slot_gagal_sell[buy_str] >= MAX_GAGAL_SELL:
                         to_delete.append(buy_str)
-                        print(f"[HAPUS SLOT HANTU] Buy @${buy:.2f} dihapus karena gagal {MAX_GAGAL_SELL}x")
-
     if to_delete:
         slots = load_slots()
         for d in to_delete:
@@ -362,7 +342,6 @@ def proses_trading():
     if harga_sekarang == 0: return
     saldo = get_binance_balance()
     cek_tp_walaupun_pause()
-
     if not RUNNING and saldo >= LOT and time.time() - LAST_FAIL_TIME > 10:
         RUNNING = True
         area_gagal.clear()
@@ -370,9 +349,7 @@ def proses_trading():
         send_telegram(f"✅ *BANGUN DARI MATI SURI*\n`Saldo: ${saldo:.2f} >= LOT: ${LOT}`")
         grid_terdekat = round(harga_sekarang / GRID) * GRID
         place_buy(grid_terdekat)
-
     if not RUNNING: return
-
     slots = load_slots()
     to_delete = []
     for buy_str, tp_target in list(slots.items()):
@@ -401,18 +378,14 @@ def proses_trading():
                     send_telegram(f"🔄 *UPDATE TP POSISI LAMA*\n`Buy @${buy:.2f}`\n`TP Lama: ${tp:.2f} -> TP Baru: ${tp_baru:.2f}`")
                 else:
                     slot_gagal_sell[buy_str] = slot_gagal_sell.get(buy_str, 0) + 1
-                    print(f"[SELL INSTAN GAGAL {slot_gagal_sell[buy_str]}X] Buy @${buy:.2f} | Error: {error_msg}")
                     if slot_gagal_sell[buy_str] >= MAX_GAGAL_SELL:
                         to_delete.append(buy_str)
-                        print(f"[HAPUS SLOT HANTU] Buy @${buy:.2f} dihapus karena gagal {MAX_GAGAL_SELL}x")
-
     if to_delete:
         slots = load_slots()
         for d in to_delete:
             if d in slots: del slots[d]
             if d in slot_gagal_sell: del slot_gagal_sell[d]
         save_slots(slots)
-
     grid_terdekat = round(harga_sekarang / GRID) * GRID
     area_grid = int(grid_terdekat / GRID) * GRID
     if area_grid not in area_yg_aktif and time.time() - last_grid_time > 3:
@@ -428,10 +401,8 @@ def run_bot():
         slots = load_slots()
         get_atr(force=True)
         harga_awal = get_harga_binance()
-        
         time.sleep(1)
-        send_telegram(f"🤖 *BOT v5.64 FLYIO*\n`HARGA: ${harga_awal:.2f}`", keyboard=True)
-        
+        send_telegram(f"🤖 *BOT v5.67 NO PRINT*\n`HARGA: ${harga_awal:.2f}`", keyboard=True)
         if not slots and RUNNING and harga_awal > 0:
             buy_price = round(harga_awal / GRID) * GRID
             place_buy(buy_price)
@@ -440,11 +411,8 @@ def run_bot():
             if len(slots_baru) > 0 and not NOTIF_AWAL_SENT:
                 send_telegram(f"📥 *AWAL START*\n`Masang BUY LIMIT pertama di: ${buy_price:.2f}`")
                 NOTIF_AWAL_SENT = True
-
         for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
         threading.Thread(target=cek_command_telegram, daemon=True).start()
-        print("BOT v5.64 AKTIF")
-
         while True:
             try:
                 get_harga_binance(); proses_trading()
@@ -454,11 +422,9 @@ def run_bot():
                     time.sleep(5)
                 get_atr(force=False)
                 time.sleep(1)
-            except Exception as e:
-                print(f"[ERROR DI LOOP] {e}")
+            except:
                 time.sleep(5)
-    except Exception as e:
-        print(f"[ERROR FATAL AWAL] {e}")
+    except: pass
 
 threading.Thread(target=run_bot, daemon=True).start()
 
