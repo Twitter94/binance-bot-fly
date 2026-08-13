@@ -14,7 +14,7 @@ WIB = timezone(timedelta(hours=7))
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR = os.environ["PAIR"]
-LOT = float(os.environ.get("LOT", "10"))
+LOT_SECRET = float(os.environ.get("LOT", "5")) # INI JADI LOT MINIMAL
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -29,7 +29,7 @@ GRID_MIN = 1.5; GRID_MAX = 7
 GRID = 1.5; TP = 1.5
 BUFFER_FEE = 0.003
 MAX_GAGAL_SELL = 3
-QTY_ACUAN = 0.01
+QTY_ACUAN = 0.01 # 1% DARI HARGA. TETAP
 harga_sekarang = 0
 last_atr = 0
 last_atr_check = 0
@@ -51,25 +51,23 @@ NOTIF_SALDO_KURANG = False
 NOTIF_SALDO_0 = False
 NOTIF_AWAL_SENT = False
 
-# TAMBAHAN CACHE
 cache_harga = 0
 cache_saldo = 0
 cache_slots = {}
 cache_time = 0
+LOT = LOT_SECRET
 
 def get_binance_fee():
-    return FEE_EST # MATIIN SAPI. PAKAI 0.1% PATEN
+    return FEE_EST
 
 def hitung_lot_otomatis(harga):
-    global QTY_ACUAN
-    fee_rate = FEE_EST
-    modal_dasar = harga * QTY_ACUAN
-    fee_buy = modal_dasar * fee_rate
-    fee_sell = modal_dasar * fee_rate
+    modal_dasar = harga * QTY_ACUAN # 1% dari harga
+    fee_buy = modal_dasar * FEE_EST
+    fee_sell = modal_dasar * FEE_EST
     buffer = modal_dasar * BUFFER_FEE
-    lot_baru = modal_dasar + fee_buy + fee_sell + buffer
-    lot_baru = max(5, round(lot_baru, 2))
-    return lot_baru
+    lot_hitung = modal_dasar + fee_buy + fee_sell + buffer
+    lot_final = max(LOT_SECRET, round(lot_hitung, 2)) # KUNCI: Ambil yg paling gede
+    return lot_final
 
 def binance_request(method, url, **kwargs):
     for i in range(3):
@@ -191,8 +189,6 @@ def send_telegram(msg, keyboard=False):
 
 def kirim_status():
     global cache_harga, cache_saldo, cache_slots, cache_time
-
-    # CACHE 10 DETIK
     if time.time() - cache_time > 10:
         cache_harga = get_harga_binance()
         cache_saldo = get_binance_balance()
@@ -201,10 +197,10 @@ def kirim_status():
 
     posisi = len(cache_slots)
     fee_rate = FEE_EST * 100
-    pesan = f"📊 *STATUS v5.68 CACHE*"
+    pesan = f"📊 *STATUS v5.70 IKUT HARGA*"
     pesan += f"\n{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: `${cache_harga:.2f}`"
     pesan += f"\nSALDO: `${cache_saldo:.4f}`"
-    pesan += f"\nGRID: `${GRID:.2f}` | LOT: `${LOT}` | Fee: `{fee_rate:.3f}%` | Posisi: `{posisi}`\n\n"
+    pesan += f"\nGRID: `${GRID:.2f}` | LOT: `${LOT}` | Min: `${LOT_SECRET}` | Fee: `{fee_rate:.3f}%` | Posisi: `{posisi}`\n\n"
     pesan += f"📍 *POSISI*\n"
     if posisi == 0: pesan += "Kosong"
     else:
@@ -217,8 +213,8 @@ def kirim_status():
     send_telegram(pesan, keyboard=True)
 
 def save_env_lot(new_lot):
-    global LOT
-    LOT_LAMA = LOT; LOT = float(new_lot)
+    global LOT_SECRET
+    LOT_LAMA = LOT_SECRET; LOT_SECRET = float(new_lot)
     return LOT_LAMA
 
 def get_atr(force=False):
@@ -253,14 +249,14 @@ def cek_command_telegram():
                     if WAITING_FOR_LOT:
                         try:
                             new_lot = float(text); lot_lama = save_env_lot(new_lot)
-                            send_telegram(f"✅ *LOT MANUAL OVERRIDE*\n`LOT Lama: ${lot_lama}`\n`LOT Baru: ${new_lot}`")
+                            send_telegram(f"✅ *LOT MINIMAL OVERRIDE*\n`LOT Lama: ${lot_lama}`\n`LOT Baru: ${new_lot}`")
                             WAITING_FOR_LOT = False
-                        except: send_telegram("❌ Kirim angka. Contoh: 10")
+                        except: send_telegram("❌ Kirim angka. Contoh: 5")
                         continue
                     if text == "status": kirim_status()
                     if text == "start": RUNNING = True; area_gagal.clear(); slot_gagal_sell.clear(); send_telegram("✅ *JALAN MANUAL*")
                     if text == "stop": RUNNING = False; send_telegram("🛑 *PAUSE MANUAL*")
-                    if text == "ganti lot": WAITING_FOR_LOT = True; send_telegram(f"💰 `LOT Sekarang: ${LOT}`\nKirim angka baru:")
+                    if text == "ganti lot": WAITING_FOR_LOT = True; send_telegram(f"💰 `LOT Minimal Sekarang: ${LOT_SECRET}`\nKirim angka baru:")
         except: time.sleep(3)
 
 def get_harga_binance():
@@ -275,8 +271,7 @@ def place_buy(buy_price):
     with data_lock:
         if not RUNNING: return
         if buy_price in area_gagal: return
-        LOT = hitung_lot_otomatis(buy_price)
-        save_env_lot(LOT)
+        LOT = hitung_lot_otomatis(buy_price) # UPDATE TIAP BUY
         tp_price = hitung_tp(buy_price)
         buy_price = round(buy_price, 2); tp_price = round(tp_price, 2)
         qty = LOT / buy_price
@@ -407,8 +402,9 @@ def run_bot():
         slots = load_slots()
         get_atr(force=True)
         harga_awal = get_harga_binance()
+        LOT = hitung_lot_otomatis(harga_awal)
         time.sleep(1)
-        send_telegram(f"🤖 *BOT v5.68 CACHE*\n`HARGA: ${harga_awal:.2f}`", keyboard=True)
+        send_telegram(f"🤖 *BOT v5.70 IKUT HARGA*\n`HARGA: ${harga_awal:.2f}`", keyboard=True)
         if not slots and RUNNING and harga_awal > 0:
             buy_price = round(harga_awal / GRID) * GRID
             place_buy(buy_price)
