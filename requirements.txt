@@ -1,8 +1,5 @@
-ccxt[binance]==4.2.91
-python-telegram-bot
-python-dotenv
-supabase
-schedule
-flask
-gunicorn
-pytz
+ccxt==4.2.15
+python-dotenv==1.0.1
+supabase==2.7.0
+requests==2.32.3
+pytz==2024.1
