@@ -1,16 +1,13 @@
 app = "bahaya"
 primary_region = "sin"
 
-[build]
-  dockerfile = "Dockerfile"
-
 [processes]
-  app = "python main.py" # ganti dari web jadi app
+  app = "python bot.py"
 
 [vm]
-  memory = '256mb' # bisa balikin ke 256mb
-  cpu_kind = 'shared'
+  memory = "256mb"
+  cpu_kind = "shared"
   cpus = 1
 
-[experimental]
-  auto_rollback = true
+[deploy]
+  restart_policy = "always"
