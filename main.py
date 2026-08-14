@@ -15,7 +15,7 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 SUPA_URL = os.getenv('SUPABASE_URL')
 SUPA_KEY = os.getenv('SUPABASE_KEY')
-HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json", "Prefer": "return=minimal"}
+HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 # [1] SETTING ATR & GRID
 ATR_PERIOD = 14; ATR_TIMEFRAME = '1h'; ATR_MULTIPLIER = 0.5
@@ -25,13 +25,13 @@ FEE = 0.001; BUFFER = 0.003
 
 exchange = ccxt.binance({
     'apiKey': API_KEY, 'secret': API_SECRET, 'enableRateLimit': True,
-    'options': {'defaultType': 'spot'} # [9] RILL BINANCE SPOT
+    'options': {'defaultType': 'spot'} # [9] RILL BINANCE
 })
 
 harga_shift = 0; grid_aktif = 0; total_profit = 0; total_sell = 0
 RUNNING = True; last_00 = 0
 
-# [6.4] LOG + [11] SUPABASE REST
+# [6.4] LOG + [11] SUPABASE REST BIAR IRIT
 def supa_get(table): 
     try: return requests.get(f"{SUPA_URL}/rest/v1/{table}?select=*", headers=HEADERS, timeout=5).json()
     except: return []
@@ -81,7 +81,7 @@ def status():
 `ATR/Grid:` ${grid_aktif}
 `Posisi:` {', '.join([f"{p['harga_buy']}" for p in pos[:8]])}
 """
-    kb = {"keyboard":[["📊 STATUS"]],"resize_keyboard":True, "one_time_keyboard":False} # [7.4]
+    kb = {"keyboard":[["📊 STATUS"]],"resize_keyboard":True} # [7.4]
     requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": txt, "reply_markup": kb})
 
 def cek_tele():
@@ -139,7 +139,7 @@ while True:
             open_ord = {float(o['price']) for o in exchange.fetch_open_orders(PAIR)} # [2.5] ANTI DOBEL ORDER
 
             # [2.1] BUY TIAP GRID TURUN TANPA MAX POSISI
-            for i in range(15): 
+            for i in range(15): # dibatesi 15 biar aman RAM
                 hb = round(buy_rapi - (i * grid), 2)
                 if harga <= hb and hb not in open_ord and hb not in harga_pos and usdt >= mod:
                     q = qty(hb)
