@@ -1,156 +1,140 @@
-import os, time, math, ccxt, requests, gc
+import os, time, asyncio, math
 from datetime import datetime
-from dotenv import load_dotenv
 import pytz
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+from telegram import Bot, ReplyKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from supabase import create_client
+from dotenv import load_dotenv
 
 load_dotenv()
-WIB = pytz.timezone('Asia/Jakarta')
+wib = pytz.timezone('Asia/Jakarta')
 
-API_KEY = os.getenv('API_KEY')
-API_SECRET = os.getenv('API_SECRET')
-PAIR = os.getenv('PAIR', 'BTCUSDT')
-LOT = float(os.getenv('LOT', 5))
-TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-SUPA_URL = os.getenv('SUPABASE_URL')
-SUPA_KEY = os.getenv('SUPABASE_KEY')
-HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}"}
+# ===== CONFIG =====
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
+PAIR = os.getenv("PAIR")
+LOT = float(os.getenv("LOT"))
+FEE = 0.001 # 0.1%
+BUFFER = 0.003 # 0.3%
+ATR_PERIOD, ATR_MULT = 14, 0.5
+MIN_GRID, MAX_GRID = 250, 1000
 
-ATR_PERIOD = 14; ATR_TIMEFRAME = '1h'; ATR_MULTIPLIER = 0.5
-MIN_GRID = 250; MAX_GRID = 1000
-FEE = 0.001; BUFFER = 0.003
+# ===== KONEKSI =====
+binance = Client(API_KEY, API_SECRET)
+tele_bot = Bot(os.getenv("TELE_TOKEN"))
+supa = create_client(os.getenv("SUPA_URL"), os.getenv("SUPA_KEY"))
+CHAT_ID = os.getenv("TELE_CHAT_ID")
 
-exchange = ccxt.binance({'apiKey': API_KEY, 'secret': API_SECRET, 'enableRateLimit': True})
+positions = {} # {harga_buy: qty}
+grid_aktif = MIN_GRID
+atr_last_update = ""
 
-grid_aktif = 0; total_profit = 0; total_sell = 0
-RUNNING = True; harga_shift = 0; last_atr_day = 0
-harga = 0; usdt = 0
+# ===== FUNGSI INTI =====
+async def log_db(level, msg, data={}):
+    supa.table("bot_logs").insert({
+        "time": datetime.now(wib).isoformat(),
+        "level": level, "message": msg, "data": data
+    }).execute()
 
-def supa_get(t): 
-    try: return requests.get(f"{SUPA_URL}/rest/v1/{t}?select=*", headers=HEADERS, timeout=5).json()
-    except: return []
-def supa_ins(t,d): requests.post(f"{SUPA_URL}/rest/v1/{t}", headers=HEADERS, json=d, timeout=5)
-def supa_up(t,i,d): requests.patch(f"{SUPA_URL}/rest/v1/{t}?id=eq.{i}", headers=HEADERS, json=d, timeout=5)
-def supa_del(t,i): requests.delete(f"{SUPA_URL}/rest/v1/{t}?id=eq.{i}", headers=HEADERS, timeout=5)
+async def send_tele(msg):
+    await tele_bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown", reply_markup=keyboard())
 
-def notif(m): 
-    try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": m, "parse_mode": "Markdown"}, timeout=5)
-    except: pass
+def keyboard():
+    return ReplyKeyboardMarkup([["STATUS"]], resize_keyboard=True)
 
-def safe_order(side, qty, price):
-    for i in range(3): # [2.6] RETRY 3X
+def get_atr(): # Poin [1] - Sederhanain dulu pake ATR dari 14 candle 1h
+    klines = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
+    highs = [float(k[2]) for k in klines]
+    lows = [float(k[3]) for k in klines]
+    closes = [float(k[4]) for k in klines]
+    trs = [max(h-l, abs(h-closes[i-1]), abs(l-closes[i-1])) for i,(h,l) in enumerate(zip(highs[1:], lows[1:]))]
+    atr = sum(trs)/ATR_PERIOD
+    new_grid = max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULT / 10) * 10))
+    return new_grid
+
+def calc_modal_potongan(price): # Poin [3]
+    fee_total = LOT * FEE * 2 # buy + sell
+    buffer = LOT * BUFFER
+    return LOT + fee_total + buffer
+
+async def place_buy(price):
+    if price in positions: return # Poin [2.2] Anti dobel
+    modal = calc_modal_potongan(price)
+    balance = float(binance.get_asset_balance('USDT')['free'])
+    if balance < modal:
+        await send_tele(f"⚠️ *SALDO KURANG*\nButuh: {modal:.2f} USDT\nPause buy")
+        await log_db("PAUSE", "Saldo kurang")
+        return
+
+    qty = LOT / price
+    for i in range(3): # Poin [2.6] Retry 3x
         try:
-            time.sleep(1.5) # [6.2] ANTI SPAM
-            if side == 'BUY': return exchange.create_limit_buy_order(PAIR, qty, price)
-            else: return exchange.create_limit_sell_order(PAIR, qty, price)
-        except: 
-            if i==2: notif(f"❌ ORDER GAGAL 3X")
-            time.sleep(2)
-    return None
+            order = binance.order_market_buy(symbol=PAIR, quantity=qty)
+            positions[price] = qty
+            await log_db("BUY", f"Buy {PAIR} {qty:.6f} @ {price}", {"price": price})
+            await send_tele(f"🟢 *BUY*\n{PAIR} @ {price}\nQty: {qty:.6f}")
+            break
+        except Exception as e: time.sleep(2)
 
-def get_atr():
-    ohlcv = exchange.fetch_ohlcv(PAIR, ATR_TIMEFRAME, limit=ATR_PERIOD+1)
-    tr = [max(ohlcv[i][2]-ohlcv[i][3], abs(ohlcv[i][2]-ohlcv[i-1][4]), abs(ohlcv[i][3]-ohlcv[i-1][4])) for i in range(1, len(ohlcv))]
-    grid = sum(tr)/ATR_PERIOD * ATR_MULTIPLIER
-    return max(MIN_GRID, min(MAX_GRID, round(grid / 50) * 50))
+async def place_sell(price_buy):
+    qty = positions.pop(price_buy)
+    tp_price = price_buy + grid_aktif # Poin [4.1]
+    for i in range(3):
+        try:
+            order = binance.order_market_sell(symbol=PAIR, quantity=qty)
+            profit = BUFFER + (qty * grid_aktif) # Poin [5]
+            await log_db("SELL", f"Sell {PAIR} {qty:.6f} @ TP", {"profit": profit})
+            await send_telegram(f"🔴 *SELL/TP*\n{PAIR} @ {tp_price}\nProfit: {profit:.2f} USDT")
+            await place_buy(tp_price) # Poin [2.4] Re-entry
+            break
+        except Exception as e: time.sleep(2)
 
-def qty(h): return round(LOT / h, 5)
-def modal(): return LOT * (1 + FEE + FEE + BUFFER) # [3]
+# ===== LOOP UTAMA =====
+async def main_loop():
+    global grid_aktif
+    await send_tele("✅ *BOT v7.0 JALAN*")
+    while True:
+        try:
+            price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
 
-def status(): # [7.1] TOMBOL CUMA BUAT CEK
-    pos = supa_get('positions')
-    txt = f"""**📊 STATUS SEKARANG**
-`Harga:` ${harga:,.2f}
-`Saldo:` ${usdt:.2f}
-`LOT:` ${LOT}
-`Grid ATR:` ${grid_aktif}
-`Total Buy:` {len(pos)}
-`Total Sell:` {total_sell}
-`Profit:` ${total_profit:.2f}
-`Posisi:` {', '.join([str(p['harga_buy']) for p in pos[:5]])}
-"""
-    kb = {"keyboard":[["📊 STATUS"]],"resize_keyboard":True}
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": txt, "reply_markup": kb})
+            # Cek ATR shift 20% tiap jam 00:00 WIB
+            #... logika ATR_AUTO_SHIFT_20% taruh di sini...
 
-def cek_tele():
-    try:
-        r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?timeout=1&limit=1").json()
-        if r.get('ok') and r.get('result') and r['result'][0]['message']['text'] == "📊 STATUS":
-            status()
-            requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={r['result'][0]['update_id']+1}")
-    except: pass
+            # Cek TP: harga >= buy + grid
+            for buy_price in list(positions.keys()):
+                if price >= buy_price + grid_aktif:
+                    await place_sell(buy_price)
 
-notif("🤖 Bot v7.6 PENGAWAS ON. Pantau 24 jam")
+            # Cek Buy: harga turun 1 grid
+            lowest_buy = min(positions.keys()) if positions else price
+            if price <= lowest_buy - grid_aktif:
+                await place_buy(price)
 
-while True:
-    try:
-        cek_tele() # Cuma cek tele, gak makan RAM
-        
-        # [KUNCI] 1 LOOP = 1 KALI PANTAU. 5 DETIK SEKALI
-        harga = exchange.fetch_ticker(PAIR)['last'] # 1. PANTAU HARGA
-        time.sleep(1)
-        
-        usdt = exchange.fetch_balance()['USDT']['free'] # 2. PANTAU SALDO
-        mod = modal()
-        if usdt < mod and RUNNING: notif(f"⚠️ PAUSE. SALDO ${usdt:.2f}"); RUNNING = False # [2.3]
-        if usdt >= mod and not RUNNING: RUNNING = True
-        time.sleep(1)
+            time.sleep(2) # Poin [6.2] Anti spam
+        except Exception as e:
+            await log_db("ERROR", str(e))
+            await send_tele(f"❌ *ERROR*\n{str(e)}")
+            time.sleep(60)
 
-        now = datetime.now(WIB)
-        if now.hour == 0 and now.day!= last_atr_day: # [1] ATR_UPDATE 00:00 WIB
-            grid_baru = get_atr()
-            if harga_shift == 0: harga_shift = harga
-            if abs(harga - harga_shift) / harga_shift >= 0.20: # [1] ATR_AUTO_SHIFT_20%
-                pos = supa_get('positions')
-                if harga > harga_shift: # A. NAIK 20%
-                    for p in pos: 
-                        exchange.create_market_sell_order(PAIR, p['qty'])
-                        notif(f"⚡ NAIK 20%. SELL INSTAN `{p['harga_buy']}`")
-                        supa_del('positions', p['id'])
-                else: # B. TURUN 20%
-                    for p in pos:
-                        supa_up('positions', p['id'], {"tp": round(p['harga_buy'] + grid_baru, 2)})
-                    notif(f"⚡ TURUN 20%. RESET TP KE GRID {grid_baru}")
-                harga_shift = harga
-            grid_aktif = grid_baru
-            last_atr_day = now.day
-            gc.collect()
-        
-        if grid_aktif == 0: grid_aktif = get_atr()
-        buy_rapi = math.floor(harga / grid_aktif) * grid_aktif # [1] BUY_AWAL_RAPI
+# ===== TELEGRAM COMMAND =====
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    balance = binance.get_asset_balance('USDT')['free']
+    price = binance.get_symbol_ticker(symbol=PAIR)['price']
+    msg = f"""*STATUS BOT v7.0*
+Saldo: {float(balance):.2f} USDT
+Harga: {price}
+LOT: {LOT}
+Grid Aktif: {grid_aktif}
+Total Buy: {len(positions)}
+Profit: -
+ATR: -
+Posisi: {list(positions.keys())}"""
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
-        if RUNNING:
-            pos_db = supa_get('positions') # [11]
-            harga_pos = {float(p['harga_buy']) for p in pos_db}
-            
-            # [2.1] PANTAU BUY TIAP GRID TURUN
-            for i in range(8): # Cuma pantau 8 grid ke bawah
-                hb = round(buy_rapi - (i * grid_aktif), 2)
-                if harga <= hb and hb not in harga_pos and usdt >= mod:
-                    q = qty(hb)
-                    if safe_order('BUY', q, hb):
-                        tp = round(hb + grid_aktif, 2) # [4.1]
-                        supa_ins('positions', {"harga_buy": hb, "qty": q, "tp": tp})
-                        notif(f"✅ AKU BUY di BINANCE `{hb:,.2f}` -> TP `{tp:,.2f}`") # [13]
-                        usdt -= mod
-                    break # dapet 1 langsung stop
+app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
+app.add_handler(CommandHandler("status", status))
+app.add_handler(MessageHandler(filters.TEXT & filters.Regex('STATUS'), status))
 
-            # [4.3] PANTAU SELL TP
-            for p in pos_db:
-                if harga >= float(p['tp']):
-                    r = exchange.create_market_sell_order(PAIR, p['qty']) # [4.2]
-                    if 'id' in r:
-                        profit = BUFFER + (float(p['qty']) * grid_aktif) # [5]
-                        total_profit += profit; total_sell += 1
-                        supa_ins('logs', {"waktu": datetime.now().isoformat(), "buy": p['harga_buy'], "sell": p['tp'], "profit": profit, "alasan": "TP"}) # [6.4]
-                        notif(f"🎯 AKU SELL di BINANCE `{p['tp']:,.2f}` Profit `${profit:.2f}`") # [13]
-                        safe_order('BUY', p['qty'], p['tp']) # [2.4] RE-ENTRY
-                        supa_del('positions', p['id'])
-                    break # dapet 1 langsung stop
-
-        gc.collect()
-        time.sleep(5) # Jedanya 5 detik. Aman dari limit binance 1200/menit
-
-    except Exception as e:
-        notif(f"❌ ERROR: {str(e)[:200]}")
-        time.sleep(30)
+asyncio.gather(main_loop(), app.run_polling())
