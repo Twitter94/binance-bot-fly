@@ -23,15 +23,13 @@ ATR_UPDATE_HOUR = 0
 MIN_GRID = 250; MAX_GRID = 1000
 FEE = 0.001; BUFFER = 0.003
 
-exchange = ccxt.binance({
-    'apiKey': API_KEY, 'secret': API_SECRET, 'enableRateLimit': True,
-    'options': {'defaultType': 'spot'} # [9] RILL BINANCE
-})
+exchange = ccxt.binance({'apiKey': API_KEY, 'secret': API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 
 harga_shift = 0; grid_aktif = 0; total_profit = 0; total_sell = 0
-RUNNING = True; last_00 = 0
+RUNNING = True; last_00 = 0; harga = 0; usdt = 0
+mode = "INIT"
 
-# [6.4] LOG + [11] SUPABASE REST BIAR IRIT
+# [6.4] LOG + [11] SUPABASE REST
 def supa_get(table): 
     try: return requests.get(f"{SUPA_URL}/rest/v1/{table}?select=*", headers=HEADERS, timeout=5).json()
     except: return []
@@ -52,7 +50,7 @@ def safe_order(side, qty, price):
             if side == 'BUY': return exchange.create_limit_buy_order(PAIR, qty, price)
             else: return exchange.create_limit_sell_order(PAIR, qty, price)
         except Exception as e:
-            if i==2: notif(f"❌ ORDER GAGAL 3X: {str(e)[:100]}")
+            if i==2: notif(f"❌ ORDER GAGAL 3X")
             time.sleep(2)
     return None
 
@@ -67,12 +65,10 @@ def modal(): return LOT * (1 + FEE + FEE + BUFFER) # [3] RUMUS MODAL
 
 # [7] TELEGRAM
 def status():
-    saldo = exchange.fetch_balance()['USDT']['free']
-    harga = exchange.fetch_ticker(PAIR)['last']
     pos = supa_get('positions')
     txt = f"""**📊 STATUS BOT v7.0 PROFESIONAL**
 `Status:` {'🟢 JALAN' if RUNNING else '🔴 PAUSE'}
-`Saldo USDT:` ${saldo:.2f}
+`Saldo USDT:` ${usdt:.2f}
 `Harga:` ${harga:,.2f}
 `LOT:` ${LOT}
 `Total Buy:` {len(pos)}
@@ -92,23 +88,23 @@ def cek_tele():
             requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={r['result'][0]['update_id']+1}")
     except: pass
 
-def shift_20(harga, grid_baru):
+def shift_20(harga_baru, grid_baru):
     global harga_shift, grid_aktif
-    if harga_shift == 0: harga_shift = harga
-    if abs(harga - harga_shift) / harga_shift >= 0.20: # [1] ATR_AUTO_SHIFT_20%
+    if harga_shift == 0: harga_shift = harga_baru
+    if abs(harga_baru - harga_shift) / harga_shift >= 0.20: # [1] ATR_AUTO_SHIFT_20%
         pos = supa_get('positions')
-        if harga > harga_shift: # A. NAIK 20%: SELL INSTAN semua
+        if harga_baru > harga_shift: # A. NAIK 20%: SELL INSTAN semua
             for p in pos: 
                 exchange.create_market_sell_order(PAIR, p['qty'])
-                notif(f"⚡ NAIK 20%. SELL INSTAN `{p['harga_buy']}`")
+                notif(f"⚡ NAIK 20%. SELL INSTAN `{p['harga_buy']}`") # [7.3]
                 supa_del('positions', p['id'])
         else: # B. TURUN 20%: RESET TP semua
             for p in pos:
                 new_tp = round(p['harga_buy'] + grid_baru, 2)
                 supa_up('positions', p['id'], {"tp": new_tp})
-            notif(f"⚡ TURUN 20%. RESET TP KE GRID {grid_baru}")
+            notif(f"⚡ TURUN 20%. RESET TP KE GRID {grid_baru}") # [7.3]
         for o in exchange.fetch_open_orders(PAIR): exchange.cancel_order(o['id'], PAIR)
-        harga_shift = harga
+        harga_shift = harga_baru
     grid_aktif = grid_baru
 
 notif("🤖 Bot v7.0 PROFESIONAL ON. 1 PAIR | 256MB MODE")
@@ -116,55 +112,72 @@ notif("🤖 Bot v7.0 PROFESIONAL ON. 1 PAIR | 256MB MODE")
 while True:
     try:
         cek_tele()
-        harga = exchange.fetch_ticker(PAIR)['last']
-        usdt = exchange.fetch_balance()['USDT']['free']
+        
+        # [KUNCI ANTI OOM] 1 LOOP = 1 KERJAAN
+        if mode == "INIT" or mode == "CHECK_PRICE":
+            harga = exchange.fetch_ticker(PAIR)['last']
+            mode = "CHECK_BALANCE"
+        
+        elif mode == "CHECK_BALANCE":
+            usdt = exchange.fetch_balance()['USDT']['free']
+            mod = modal()
+            if usdt < mod and RUNNING: notif(f"⚠️ PAUSE. SALDO ${usdt:.2f}"); RUNNING = False # [2.3]
+            if usdt >= mod and not RUNNING: RUNNING = True; notif(f"✅ AUTO RESUME")
+            mode = "CHECK_ATR"
+            gc.collect()
 
-        now = datetime.now(WIB)
-        if now.hour == ATR_UPDATE_HOUR and now.minute < 2 and now.day!= last_00: # [1] ATR_UPDATE 00:00 WIB
-            grid_baru = get_atr()
-            shift_20(harga, grid_baru)
-            last_00 = now.day
+        elif mode == "CHECK_ATR":
+            now = datetime.now(WIB)
+            if now.hour == ATR_UPDATE_HOUR and now.day!= last_00: # [1] ATR_UPDATE 00:00 WIB
+                grid_baru = get_atr()
+                shift_20(harga, grid_baru)
+                last_00 = now.day
+            else:
+                grid_aktif = get_atr()
+            mode = "CHECK_BUY"
+            gc.collect()
 
-        grid = get_atr(); grid_aktif = grid
-        buy_rapi = math.floor(harga / grid) * grid # [1] BUY_AWAL_RAPI KELIPATAN GRID
-        shift_20(harga, grid)
-
-        mod = modal()
-        if usdt < mod and RUNNING: notif(f"⚠️ PAUSE. SALDO ${usdt:.2f} < MODAL ${mod:.2f}"); RUNNING = False # [2.3]
-        if usdt >= mod and not RUNNING: RUNNING = True; notif(f"✅ AUTO RESUME. Saldo: ${usdt:.2f}")
-
-        if RUNNING:
+        elif mode == "CHECK_BUY" and RUNNING:
+            buy_rapi = math.floor(harga / grid_aktif) * grid_aktif # [1] BUY_AWAL_RAPI
+            shift_20(harga, grid_aktif)
             pos_db = supa_get('positions') # [11] SLOT DI SUPABASE
             harga_pos = {float(p['harga_buy']) for p in pos_db}
-            open_ord = {float(o['price']) for o in exchange.fetch_open_orders(PAIR)} # [2.5] ANTI DOBEL ORDER
+            open_ord = {float(o['price']) for o in exchange.fetch_open_orders(PAIR)} # [2.5] ANTI DOBEL
 
             # [2.1] BUY TIAP GRID TURUN TANPA MAX POSISI
-            for i in range(15): # dibatesi 15 biar aman RAM
-                hb = round(buy_rapi - (i * grid), 2)
+            for i in range(10): 
+                hb = round(buy_rapi - (i * grid_aktif), 2)
                 if harga <= hb and hb not in open_ord and hb not in harga_pos and usdt >= mod:
                     q = qty(hb)
                     if safe_order('BUY', q, hb):
-                        tp = round(hb + grid, 2) # [4.1] TP
+                        tp = round(hb + grid_aktif, 2) # [4.1] TP
                         supa_ins('positions', {"harga_buy": hb, "qty": q, "tp": tp})
                         notif(f"✅ BUY `{hb:,.2f}` -> TP `{tp:,.2f}`") # [7.3]
-                        usdt -= mod
+                    break # buy 1 lalu keluar
+            mode = "CHECK_SELL"
+            gc.collect()
 
+        elif mode == "CHECK_SELL":
+            pos_db = supa_get('positions')
             # [4.3] JIKA BOT OFF/ON LAGI DAN HARGA SUDAH LEWAT TP: SELL INSTAN
             for p in pos_db:
-                if harga >= float(p['tp']): # [4.1] TP
+                if harga >= float(p['tp']):
                     r = exchange.create_market_sell_order(PAIR, p['qty']) # [4.2] JUAL FULL
                     if 'id' in r:
-                        profit = BUFFER + (float(p['qty']) * grid) # [5] RUMUS PROFIT
+                        profit = BUFFER + (float(p['qty']) * grid_aktif) # [5] RUMUS PROFIT
                         total_profit += profit; total_sell += 1
                         log_csv(datetime.now().isoformat(), p['harga_buy'], p['tp'], profit, "TP") # [6.4]
                         supa_ins('logs', {"waktu": datetime.now().isoformat(), "buy": p['harga_buy'], "sell": p['tp'], "profit": profit, "alasan": "TP"})
                         notif(f"🎯 TP `{p['harga_buy']:,.2f}` -> `{p['tp']:,.2f}` Profit `${profit:.2f}`") # [7.3]
                         safe_order('BUY', p['qty'], p['tp']) # [2.4] RE-ENTRY
                         supa_del('positions', p['id'])
+                        break # sell 1 lalu keluar
+            mode = "CHECK_PRICE"
+            gc.collect()
 
-        gc.collect()
-        time.sleep(10)
+        time.sleep(15)
 
     except Exception as e:
         notif(f"❌ ERROR: {str(e)[:200]}") # [7.3]
-        time.sleep(30)
+        mode = "CHECK_PRICE"
+        time.sleep(60)
