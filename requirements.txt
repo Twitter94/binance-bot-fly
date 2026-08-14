@@ -1,7 +1,10 @@
 ccxt==4.2.51
-python-telegram-bot==20.7
+python-telegram-bot==20.3
 python-dotenv==1.0.1
-supabase==2.3.4
+supabase==1.0.3
+httpx==0.23.3
 schedule==1.2.2
 pandas==2.3.3
 requests==2.34.2
+flask==3.0.3
+gunicorn==21.2.0
