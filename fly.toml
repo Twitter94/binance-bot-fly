@@ -2,7 +2,7 @@ app = "bahaya"
 primary_region = "sin"
 
 [processes]
-app = "python bot_v7.py"
+app = "python main.py" # <-- INI YANG DIGANTI
 
 [deploy]
 restart_policy = "always"
