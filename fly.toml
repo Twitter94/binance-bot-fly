@@ -1,22 +1,23 @@
 app = "bahaya"
 primary_region = "sin"
 
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  web = "gunicorn main:app --bind 0.0.0.0:8080 --workers 1"
+
 [http_service]
   internal_port = 8080
   force_https = true
   auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
-  
-[processes]
-app = "python main.py" # <-- INI YANG DIGANTI
 
-[deploy]
-restart_policy = "always"
-
-[[vm]]
-  cpus = 1
-  memory = "256mb"
-
-[env]
-  TZ = "Asia/Jakarta"
+[checks]
+  [checks.health]
+    type = "http"
+    port = 8080
+    path = "/"
+    interval = "10s"
+    timeout = "2s"
