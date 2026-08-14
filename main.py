@@ -28,15 +28,22 @@ FEE = 0.001; BUFFER = 0.003; MAX_GAGAL_SELL = 3
 # [OPTIMAL] CCXT CUMA LOAD 1 PAIR DOANG BIAR HEMAT RAM
 exchange = ccxt.binance({
     'apiKey': API_KEY, 'secret': API_SECRET, 'enableRateLimit': True,
-    'options': {'defaultType': 'spot', 'fetchMarkets': False} # JANGAN LOAD 4000 MARKET
+    'options': {'defaultType': 'spot', 'fetchMarkets': False}
 })
-exchange.load_markets({PAIR: {}}) # CUMA LOAD BTCUSDT
+exchange.load_markets({PAIR: {}})
 
 harga_terakhir_shift = 0; grid_aktif = 0; total_profit = 0; total_sell = 0
 slot_gagal_sell = {}
 RUNNING = True
-NOTIF_SALDO_0 = False
 last_daily_report = 0
+
+# [BARU] FLAG NOTIF 1X
+NOTIF_FLAGS = {
+    "SALDO_KURANG": False,
+    "ERROR_LOOP": False,
+    "ORDER_GAGAL": False,
+    "SLOT_HANTU": False
+}
 
 app = Flask(__name__)
 @app.route("/")
@@ -48,6 +55,14 @@ def notif(msg):
                       json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
     except: pass
 
+def notif_once(key, msg): # [BARU] FUNGSI NOTIF 1X
+    if not NOTIF_FLAGS[key]:
+        notif(msg)
+        NOTIF_FLAGS[key] = True
+
+def reset_notif(key): # [BARU] BUAT RESET PAS NORMAL LAGI
+    NOTIF_FLAGS[key] = False
+
 def log_db(waktu, buy, sell, profit, alasan):
     try: supabase.table('logs').insert({"waktu": waktu, "buy": buy, "sell": sell, "profit": profit, "alasan": alasan}).execute()
     except: pass
@@ -56,29 +71,30 @@ def get_atr_grid():
     ohlcv = exchange.fetch_ohlcv(PAIR, ATR_TIMEFRAME, limit=ATR_PERIOD+1)
     tr = [max(ohlcv[i][2]-ohlcv[i][3], abs(ohlcv[i][2]-ohlcv[i-1][4]), abs(ohlcv[i][3]-ohlcv[i-1][4])) for i in range(1, len(ohlcv))]
     atr = sum(tr)/ATR_PERIOD
-    grid = atr * ATR_MULTIPLIER # [1] Multiplier 0.5
-    return max(MIN_GRID, min(MAX_GRID, round(grid / 50) * 50)) # [1] Dibulatkan ke 50
+    grid = atr * ATR_MULTIPLIER
+    return max(MIN_GRID, min(MAX_GRID, round(grid / 50) * 50))
 
-def hitung_qty(harga): return LOT / harga # [5]
-def modal_potong(): return LOT * (1 + FEE + FEE + BUFFER) # [3]
+def hitung_qty(harga): return LOT / harga
+def modal_potong(): return LOT * (1 + FEE + FEE + BUFFER)
 
 def safe_order(side, qty, price):
-    for i in range(3): # [2.6] RETRY 3X
+    for i in range(3):
         try:
-            time.sleep(1.5) # [6.2] ANTI SPAM
+            time.sleep(1.5)
+            reset_notif("ORDER_GAGAL") # kalau berhasil reset flag
             return exchange.create_limit_order(PAIR, side, qty, price)
         except Exception as e:
-            if i==2: notif(f"❌ ORDER GAGAL 3X: {e}")
+            if i==2: notif_once("ORDER_GAGAL", f"❌ ORDER GAGAL 3X: {e}")
             time.sleep(2)
     return None
 
 def binance_market_sell(qty):
-    time.sleep(1.5) # [6.2]
+    time.sleep(1.5)
     return exchange.create_market_sell_order(PAIR, qty)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): # [7]
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("📊 STATUS", callback_data='status')]]
-    await update.message.reply_text("Bot v7.8 INFINITE GRID ON - RAM OPTIMAL", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Bot v7.8.2 INFINITE GRID ON - NOTIF 1X", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def setlot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global LOT
@@ -93,11 +109,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     if query.data == 'status': await kirim_status(context)
 
-async def kirim_status(context: ContextTypes.DEFAULT_TYPE): # [7.2]
+async def kirim_status(context: ContextTypes.DEFAULT_TYPE):
     saldo = exchange.fetch_balance(); usdt = saldo['USDT']['free']
     harga = exchange.fetch_ticker(PAIR)['last']
     positions = supabase.table('positions').select('*').execute().data
-    txt = f"""**📊 STATUS BOT v7.8**
+    txt = f"""**📊 STATUS BOT v7.8.2**
 `Status:` {'🟢 JALAN' if RUNNING else '🔴 PAUSE'}
 `Saldo USDT:` {usdt:.2f}
 `Harga:` {harga}
@@ -105,21 +121,19 @@ async def kirim_status(context: ContextTypes.DEFAULT_TYPE): # [7.2]
 `Total Buy:` {len(positions)}
 `Total Sell:` {total_sell}
 `Profit:` {total_profit:.2f}
-`ATR:` {grid_aktif/ATR_MULTIPLIER:.2f}
 `Grid_Aktif:` {grid_aktif}
-`Posisi:` {[p['harga_buy'] for p in positions[:5]]}
 """
     await context.bot.send_message(CHAT_ID, txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 STATUS", callback_data='status')]]))
 
-def cek_shift_20(harga, grid_baru): # [1] ATR_AUTO_SHIFT_20%
+def cek_shift_20(harga, grid_baru):
     global harga_terakhir_shift, grid_aktif
     if harga_terakhir_shift == 0: harga_terakhir_shift = harga
     if abs(harga - harga_terakhir_shift) / harga_terakhir_shift >= 0.20:
         positions = supabase.table('positions').select('*').execute().data
-        if harga > harga_terakhir_shift: # [1A] NAIK 20%
+        if harga > harga_terakhir_shift:
             for p in positions: safe_order('SELL', p['qty'], p['tp'])
             notif(f"⚡ NAIK 20%. SELL INSTAN SEMUA TP LAMA")
-        else: # [1B] TURUN 20%
+        else:
             for p in positions:
                 new_tp = round(p['harga_buy'] + grid_baru, 2)
                 supabase.table('positions').update({"tp": new_tp}).eq('id', p['id']).execute()
@@ -133,12 +147,11 @@ def laporan_harian():
     notif(f"📈 *LAPORAN HARIAN*\n`Total Sell:` {total_sell}\n`Total Profit:` {total_profit:.2f} USDT")
 
 def loop_utama():
-    global total_profit, total_sell, NOTIF_SALDO_0, last_daily_report, grid_aktif
+    global total_profit, total_sell, last_daily_report, grid_aktif, RUNNING
     try:
         harga = exchange.fetch_ticker(PAIR)['last']
         usdt = exchange.fetch_balance()['USDT']['free']
 
-        # [LAPORAN HARIAN JAM 00:00]
         now = datetime.now(WIB)
         if now.hour == 0 and now.minute < 1 and last_daily_report!= now.day:
             laporan_harian()
@@ -147,24 +160,26 @@ def loop_utama():
             last_daily_report = now.day
             grid_aktif = grid_baru
 
-        # [2.3] AUTO PAUSE/RESUME
-        if usdt < modal_potong() and RUNNING:
-            if not NOTIF_SALDO_0: notif(f"⚠️ PAUSE. SALDO ${usdt:.2f} < MODAL ${modal_potong():.2f}"); NOTIF_SALDO_0 = True
+        # [2.3] AUTO PAUSE/RESUME - NOTIF 1X
+        modal = modal_potong()
+        if usdt < modal and RUNNING:
+            notif_once("SALDO_KURANG", f"⚠️ PAUSE. SALDO ${usdt:.2f} < MODAL ${modal:.2f}")
             RUNNING = False; return
-        if usdt >= modal_potong() and not RUNNING:
-            RUNNING = True; notif(f"✅ AUTO RESUME. Saldo: ${usdt:.2f}"); NOTIF_SALDO_0 = False
+        if usdt >= modal and not RUNNING:
+            RUNNING = True
+            notif(f"✅ AUTO RESUME. Saldo: ${usdt:.2f}") # ini boleh spam karena penting
+            reset_notif("SALDO_KURANG") # reset biar bisa notif lagi kalau kurang lagi
+
         if not RUNNING: return
 
         grid = get_atr_grid(); grid_aktif = grid
-        buy_rapi = math.floor(harga / grid) * grid # [1] BUY_AWAL_RAPI
+        buy_rapi = math.floor(harga / grid) * grid
         cek_shift_20(harga, grid)
 
-        # [OPTIMAL] AMBIL DATA 1X DOANG
         positions_db = supabase.table('positions').select('*').execute().data
         positions = {p['harga_buy']: p for p in positions_db}
         open_orders_binance = exchange.fetch_open_orders(PAIR)
         open_orders = {float(o['price']) for o in open_orders_binance}
-        modal = modal_potong()
 
         # [2.1] BUY TIAP GRID TURUN
         for i in range(50):
@@ -173,29 +188,29 @@ def loop_utama():
                 if usdt >= modal:
                     qty = hitung_qty(harga_buy)
                     if safe_order('BUY', qty, harga_buy):
-                        tp = round(harga_buy + grid, 2) # [4.1]
+                        tp = round(harga_buy + grid, 2)
                         supabase.table('positions').insert({"harga_buy": harga_buy, "qty": qty, "tp": tp}).execute()
-                        positions[harga_buy] = {"harga_buy": harga_buy, "qty": qty, "tp": tp} # update dict lokal
-                        notif(f"✅ BUY `{harga_buy}` -> TP `{tp}`") # [7.3]
+                        positions[harga_buy] = {"harga_buy": harga_buy, "qty": qty, "tp": tp}
+                        notif(f"✅ BUY `{harga_buy}` -> TP `{tp}`") # BUY/TP tetap notif karena duit
                         usdt -= modal
 
-        del open_orders_binance # [BUANG SAMPAH]
+        del open_orders_binance
 
         # [4.3] JIKA HARGA SUDAH LEWAT TP: SELL INSTAN
-        for o in exchange.fetch_closed_orders(PAIR, limit=10): # [DIKECILIN JADI 10]
+        for o in exchange.fetch_closed_orders(PAIR, limit=10):
             if o['side'] == 'SELL' and o['status'] == 'closed':
                 harga_sell = float(o['price'])
-                for p_id, p in list(positions.items()): # list() biar aman pas delete
+                for p_id, p in list(positions.items()):
                     if abs(p['tp'] - harga_sell) < grid/2:
-                        profit = (LOT * BUFFER) + (p['qty'] * grid) # [5]
+                        profit = (LOT * BUFFER) + (p['qty'] * grid)
                         total_profit += profit; total_sell += 1
-                        log_db(datetime.now().isoformat(), p['harga_buy'], harga_sell, profit, "TP") # [6.4]
-                        notif(f"🎯 TP `{p['harga_buy']}` -> `{harga_sell}` Profit `{profit:.2f}`")
-                        safe_order('BUY', p['qty'], harga_sell) # [2.4] RE-ENTRY
+                        log_db(datetime.now().isoformat(), p['harga_buy'], harga_sell, profit, "TP")
+                        notif(f"🎯 TP `{p['harga_buy']}` -> `{harga_sell}` Profit `{profit:.2f}`") # TP tetap notif
+                        safe_order('BUY', p['qty'], harga_sell)
                         supabase.table('positions').delete().eq('id', p['id']).execute()
-                        del positions[p_id] # hapus dari dict lokal
+                        del positions[p_id]
 
-        # [CEK SLOT HANTU] - PAKE 'positions' YG UDAH ADA
+        # [CEK SLOT HANTU] - NOTIF 1X
         for p_id, p in list(positions.items()):
             if harga >= p['tp']:
                 r = binance_market_sell(p['qty'])
@@ -204,11 +219,12 @@ def loop_utama():
                     if slot_gagal_sell[p['harga_buy']] >= MAX_GAGAL_SELL:
                         supabase.table('positions').delete().eq('id', p['id']).execute()
                         del positions[p_id]
-                        notif(f"🗑️ HAPUS SLOT HANTU {p['harga_buy']}")
+                        notif_once("SLOT_HANTU", f"🗑️ HAPUS SLOT HANTU {p['harga_buy']}")
 
-        del positions_db # [BUANG SAMPAH AKHIR]
+        del positions_db
 
-    except Exception as e: notif(f"❌ ERROR LOOP: {e}")
+    except Exception as e:
+        notif_once("ERROR_LOOP", f"❌ ERROR LOOP: {e}") # ERROR CUMA 1X
 
 async def run_bot():
     app_telegram = Application.builder().token(TOKEN).build()
@@ -222,10 +238,9 @@ async def run_bot():
 
     while True:
         loop_utama()
-        await asyncio.sleep(3) # Jalan tiap 3 detik
+        await asyncio.sleep(3)
 
 async def main():
-    # Flask jalan di thread, Bot + Loop jalan di asyncio
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080, use_reloader=False), daemon=True).start()
     await run_bot()
 
