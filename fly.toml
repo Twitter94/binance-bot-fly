@@ -4,20 +4,15 @@ primary_region = "sin"
 [build]
   dockerfile = "Dockerfile"
 
-[processes]
-  web = "gunicorn main:app --bind 0.0.0.0:8080 --workers 1"
-
 [http_service]
   internal_port = 8080
   force_https = true
   auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
+  processes = ["web"] # [INI KUNCINYA]
 
-[checks]
-  [checks.health]
-    type = "http"
-    port = 8080
-    path = "/"
-    interval = "10s"
-    timeout = "2s"
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
