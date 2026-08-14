@@ -1,15 +1,8 @@
-    flask
-    python-dotenv
-    requests
-    supabase
-    fastapi==0.115.0
-    uvicorn[standard]==0.30.6
-    python-binance==1.0.29
-    pydantic==2.9.2
-
 ccxt==4.2.51
 python-telegram-bot==20.7
 python-dotenv==1.0.1
-supabase==2.5.0
+supabase==2.3.4
+httpx==0.24.1
 schedule==1.2.2
 pandas
+requests
