@@ -20,6 +20,6 @@ primary_region = "sin"
     handlers = ["tls", "http"]
 
 [vm]
-  memory = '256mb' # <-- GANTI DARI '256mb'
+  memory = '300mb' # <-- GANTI DARI '256mb'
   cpu_kind = 'shared'
   cpus = 1
