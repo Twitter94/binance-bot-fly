@@ -4,6 +4,5 @@ python-dotenv==1.0.1
 supabase==2.3.4
 httpx==0.25.2
 schedule==1.2.2
-pandas
-requests
-asyncio
+pandas==2.3.3
+requests==2.34.2
