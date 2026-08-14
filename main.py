@@ -1,434 +1,189 @@
-import time
-import os
-import requests
-import json
-import threading
-import hmac
-import hashlib
-from decimal import Decimal
-from datetime import datetime, timezone, timedelta
-from flask import Flask
-from supabase import create_client, Client
+import os, time, math, ccxt, schedule, asyncio
+from datetime import datetime
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from supabase import create_client
 
-WIB = timezone(timedelta(hours=7))
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-PAIR = os.environ["PAIR"]
-LOT_SECRET = float(os.environ.get("LOT", "5")) # INI JADI LOT MINIMAL
+load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# [8] ENV
+API_KEY = os.getenv('API_KEY')
+API_SECRET = os.getenv('API_SECRET')
+PAIR = os.getenv('PAIR')
+LOT = float(os.getenv('LOT'))
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-BINANCE_API_KEY = os.environ["BINANCE_API_KEY"]
-BINANCE_SECRET_KEY = os.environ["BINANCE_SECRET_KEY"]
-BASE_URL = "https://api.binance.com"
+# [11] SUPABASE
+supabase = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
 
-ATR_PERIOD = 14; ATR_TIMEFRAME = "1h"; ATR_MULTIPLIER = 0.5; ATR_UPDATE_HOUR = 0
-GRID_MIN = 1.5; GRID_MAX = 7
-GRID = 1.5; TP = 1.5
-BUFFER_FEE = 0.003
-MAX_GAGAL_SELL = 3
-QTY_ACUAN = 0.01 # 1% DARI HARGA. TETAP
-harga_sekarang = 0
-last_atr = 0
-last_atr_check = 0
+# [1] SETTING
+ATR_PERIOD = 14
+ATR_MULTIPLIER = 0.5
+MIN_GRID = 250
+MAX_GRID = 1000
+FEE = 0.001 # [9] FEE RILL 0.1%
+BUFFER = 0.003 # 0.3%
 
-last_update_id = 0
-RUNNING = True
-WAITING_FOR_LOT = False
-last_grid_buy = 0
-last_grid_time = 0
-area_yg_aktif = []
-area_gagal = set()
-slot_gagal_sell = {}
-LAST_FAIL_TIME = 0
-data_lock = threading.Lock()
-session = requests.Session()
-session.headers.update({'X-MBX-APIKEY': BINANCE_API_KEY})
-FEE_EST = 0.001
-NOTIF_SALDO_KURANG = False
-NOTIF_SALDO_0 = False
-NOTIF_AWAL_SENT = False
+exchange = ccxt.binance({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'enableRateLimit': True, # [6.2] ANTI SPAM
+    'options': {'defaultType': 'spot'}
+})
 
-cache_harga = 0
-cache_saldo = 0
-cache_slots = {}
-cache_time = 0
-LOT = LOT_SECRET
+harga_terakhir_shift = 0
+grid_aktif = 0
+total_profit = 0
+total_sell = 0
 
-def get_binance_fee():
-    return FEE_EST
+# [6.4] LOG KE SUPABASE
+def log_db(waktu, buy, sell, profit, alasan):
+    supabase.table('logs').insert({
+        "waktu": waktu, "buy": buy, "sell": sell, "profit": profit, "alasan": alasan
+    }).execute()
 
-def hitung_lot_otomatis(harga):
-    modal_dasar = harga * QTY_ACUAN # 1% dari harga
-    fee_buy = modal_dasar * FEE_EST
-    fee_sell = modal_dasar * FEE_EST
-    buffer = modal_dasar * BUFFER_FEE
-    lot_hitung = modal_dasar + fee_buy + fee_sell + buffer
-    lot_final = max(LOT_SECRET, round(lot_hitung, 2)) # KUNCI: Ambil yg paling gede
-    return lot_final
+# [7] TELEGRAM
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton("📊 STATUS", callback_data='status')]]
+    await update.message.reply_text("Bot v7.0 ON", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def binance_request(method, url, **kwargs):
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query.data == 'status': await kirim_status(context)
+
+async def kirim_status(context: ContextTypes.DEFAULT_TYPE):
+    saldo = exchange.fetch_balance()
+    usdt = saldo['USDT']['free']
+    harga = exchange.fetch_ticker(PAIR)['last']
+    positions = supabase.table('positions').select('*').execute().data
+    total_buy = len(positions)
+
+    txt = f"""**📊 STATUS BOT v7.0**
+`Saldo USDT :` {usdt:.2f}
+`Harga :` {harga}
+`LOT :` {LOT}
+`Total Buy :` {total_buy}
+`Total Sell :` {total_sell}
+`Profit :` {total_profit:.2f}
+`ATR :` {grid_aktif/ATR_MULTIPLIER:.2f}
+`Grid_Aktif :` {grid_aktif}
+`Posisi :` {[p['harga_buy'] for p in positions]}
+"""
+    keyboard = [[InlineKeyboardButton("📊 STATUS", callback_data='status')]]
+    await context.bot.send_message(CHAT_ID, txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+def notif(msg):
+    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg})
+
+# [1] HITUNG GRID ATR
+def get_atr_grid():
+    ohlcv = exchange.fetch_ohlcv(PAIR, '1h', limit=ATR_PERIOD+1)
+    tr = []
+    for i in range(1, len(ohlcv)):
+        h,l,c,pc = ohlcv[i][2], ohlcv[i][3], ohlcv[i][4], ohlcv[i-1][4]
+        tr.append(max(h-l, abs(h-pc), abs(l-pc)))
+    atr = sum(tr)/ATR_PERIOD
+    grid = atr * ATR_MULTIPLIER
+    return max(MIN_GRID, min(MAX_GRID, round(grid / 50) * 50))
+
+# [3] RUMUS MODAL
+def hitung_qty(harga): return LOT / harga
+def modal_potong(): return LOT * (1 + FEE + FEE + BUFFER)
+
+# [6.6] RETRY 3X
+def safe_order(side, qty, price):
     for i in range(3):
-        try:
-            kwargs['timeout'] = 15
-            r = session.request(method, url, **kwargs)
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.RequestException:
-            if i == 2:
-                return {'code': -1, 'msg': 'Request failed 3x'}
-            time.sleep(2)
+        try: return exchange.create_limit_order(PAIR, side, qty, price)
+        except: time.sleep(2)
+    notif(f"❌ ERROR ORDER GAGAL 3X")
     return None
 
-def hitung_tp(buy_price):
-    fee_rate = FEE_EST
-    fee_total = LOT * fee_rate * 2
-    if GRID > fee_total:
-        return round(buy_price + GRID, 2)
-    else:
-        return round(buy_price + GRID * (1 + BUFFER_FEE), 2)
+def cancel_all():
+    for o in exchange.fetch_open_orders(PAIR): exchange.cancel_order(o['id'], PAIR)
 
-def load_slots():
-    res = supabase.table("slots").select("*").execute()
-    return {str(row["buy_price"]): row["tp_price"] for row in res.data}
+# [1] CEK SHIFT 20%
+def cek_shift_20(harga, grid_baru):
+    global harga_terakhir_shift, grid_aktif
+    if harga_terakhir_shift == 0: harga_terakhir_shift = harga
+    if abs(harga - harga_terakhir_shift) / harga_terakhir_shift >= 0.20:
+        positions = supabase.table('positions').select('*').execute().data
+        if harga > harga_terakhir_shift: # [1A] NAIK 20%
+            for p in positions: safe_order('SELL', p['qty'], p['tp'])
+            notif(f"⚡ NAIK 20%. SELL INSTAN SEMUA TP LAMA")
+        else: # [1B] TURUN 20%
+            for p in positions:
+                new_tp = round(p['harga_buy'] + grid_baru, 2)
+                supabase.table('positions').update({"tp": new_tp, "grid": grid_baru}).eq('id', p['id']).execute()
+            notif(f"⚡ TURUN 20%. RESET TP KE GRID {grid_baru}")
+        cancel_all()
+        harga_terakhir_shift = harga
+    grid_aktif = grid_baru
 
-def save_slots(slots):
-    supabase.table("slots").delete().neq("buy_price", -1).execute()
-    data = [{"buy_price": float(buy), "tp_price": tp, "pair": PAIR} for buy, tp in slots.items()]
-    if data:
-        supabase.table("slots").insert(data).execute()
+# [2][4] LOOP UTAMA
+def loop_utama():
+    global total_profit, total_sell
+    harga = exchange.fetch_ticker(PAIR)['last']
+    grid = get_atr_grid()
+    buy_rapi = math.floor(harga / grid) * grid # [1] BUY_AWAL_RAPI
 
-def binance_sign(params={}):
-    query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-    signature = hmac.new(BINANCE_SECRET_KEY.encode(), query_string.encode(), hashlib.sha256).hexdigest()
-    return f"{query_string}&signature={signature}"
+    cek_shift_20(harga, grid)
 
-def get_binance_balance():
-    try:
-        ts = int(time.time() * 1000)
-        query = binance_sign({"timestamp": ts})
-        r = binance_request("GET", f"{BASE_URL}/api/v3/account?{query}")
-        if 'balances' in r:
-            for b in r['balances']:
-                if b['asset'] == 'USDT': return float(b['free'])
-    except: pass
-    return 0
+    # [2] ATURAN BUY
+    open_orders = {float(o['price']) for o in exchange.fetch_open_orders(PAIR)}
+    positions = {p['harga_buy']: p for p in supabase.table('positions').select('*').execute().data}
+    usdt = exchange.fetch_balance()['USDT']['free']
+    modal = modal_potong()
 
-def get_order_details(symbol, order_id):
-    try:
-        ts = int(time.time() * 1000)
-        query = binance_sign({"symbol": symbol, "orderId": order_id, "timestamp": ts})
-        r = binance_request("GET", f"{BASE_URL}/api/v3/order?{query}")
-        return r
-    except: return None
-
-def hitung_dari_fills(order_data):
-    if not order_data or 'fills' not in order_data or len(order_data['fills']) == 0: return 0, 0, 0, 0
-    total_qty = Decimal('0'); total_quote = Decimal('0'); total_fee_usdt = Decimal('0')
-    for f in order_data['fills']:
-        qty = Decimal(f['qty']); price = Decimal(f['price']); commission = Decimal(f['commission']); commission_asset = f['commissionAsset']
-        total_qty += qty; total_quote += qty * price
-        if commission_asset == 'USDT': total_fee_usdt += commission
-        else:
-            try:
-                p = binance_request("GET", f"{BASE_URL}/api/v3/ticker/price?symbol={commission_asset}USDT")
-                total_fee_usdt += commission * Decimal(p['price'])
-            except: pass
-    avg_price = total_quote / total_qty if total_qty > 0 else Decimal('0')
-    return float(total_qty), float(total_quote), float(total_fee_usdt), float(avg_price)
-
-def cancel_order(orderId):
-    ts = int(time.time() * 1000)
-    params = {"symbol": PAIR, "orderId": orderId, "timestamp": ts}
-    query = binance_sign(params)
-    binance_request("DELETE", f"{BASE_URL}/api/v3/order?{query}")
-
-def cancel_all_tp_orders():
-    try:
-        ts = int(time.time() * 1000)
-        query = binance_sign({"symbol": PAIR, "timestamp": ts})
-        orders = binance_request("GET", f"{BASE_URL}/api/v3/openOrders?{query}")
-        for o in orders:
-            if o['side'] == 'SELL': cancel_order(o['orderId'])
-    except: pass
-
-def binance_order(side, price, qty):
-    global RUNNING, LAST_FAIL_TIME
-    qty = float(f"{qty:.3f}")
-    ts = int(time.time() * 1000)
-    params = {"symbol": PAIR,"side": side,"type": "LIMIT","timeInForce": "GTC","quantity": f"{qty:.3f}","price": f"{price:.2f}","timestamp": ts}
-    query = binance_sign(params)
-    r = binance_request("POST", f"{BASE_URL}/api/v3/order?{query}")
-    if 'code' in r:
-        if side == "BUY":
-            RUNNING = False
-            LAST_FAIL_TIME = time.time()
-            area_gagal.add(price)
-        return None
-    return r
-
-def binance_market_sell(qty):
-    qty = float(f"{qty:.3f}")
-    ts = int(time.time() * 1000)
-    params = {"symbol": PAIR,"side": "SELL","type": "MARKET","quantity": f"{qty:.3f}","timestamp": ts}
-    query = binance_sign(params)
-    return binance_request("POST", f"{BASE_URL}/api/v3/order?{query}")
-
-def send_telegram(msg, keyboard=False):
-    try:
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
-        if keyboard:
-            data["reply_markup"] = {
-                "keyboard": [[{"text": "Status"}],[{"text": "Start"}, {"text": "Stop"}],[{"text": "Ganti LOT"}]],
-                "resize_keyboard": True
-            }
-        session.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=data, timeout=3)
-    except: pass
-
-def kirim_status():
-    global cache_harga, cache_saldo, cache_slots, cache_time
-    if time.time() - cache_time > 10:
-        cache_harga = get_harga_binance()
-        cache_saldo = get_binance_balance()
-        cache_slots = load_slots()
-        cache_time = time.time()
-
-    posisi = len(cache_slots)
-    fee_rate = FEE_EST * 100
-    pesan = f"📊 *STATUS v5.70 IKUT HARGA*"
-    pesan += f"\n{'🟢 JALAN' if RUNNING else '🔴 PAUSE'} | Harga: `${cache_harga:.2f}`"
-    pesan += f"\nSALDO: `${cache_saldo:.4f}`"
-    pesan += f"\nGRID: `${GRID:.2f}` | LOT: `${LOT}` | Min: `${LOT_SECRET}` | Fee: `{fee_rate:.3f}%` | Posisi: `{posisi}`\n\n"
-    pesan += f"📍 *POSISI*\n"
-    if posisi == 0: pesan += "Kosong"
-    else:
-        for buy_str, tp_target in list(cache_slots.items())[:5]:
-            gagal = slot_gagal_sell.get(buy_str, 0)
-            pesan += f"`BUY ${float(buy_str):.2f} -> TP ${float(tp_target):.2f}`"
-            if gagal > 0: pesan += f" `G:{gagal}x`"
-            pesan += "\n"
-        if posisi > 5: pesan += f"...dan {posisi-5} lain"
-    send_telegram(pesan, keyboard=True)
-
-def save_env_lot(new_lot):
-    global LOT_SECRET
-    LOT_LAMA = LOT_SECRET; LOT_SECRET = float(new_lot)
-    return LOT_LAMA
-
-def get_atr(force=False):
-    global GRID, TP, last_atr, last_atr_check
-    if time.time() - last_atr_check < 60 and force == False: return
-    last_atr_check = time.time()
-    for i in range(3):
-        try:
-            data = binance_request("GET", f"{BASE_URL}/api/v3/klines?symbol={PAIR}&interval={ATR_TIMEFRAME}&limit={ATR_PERIOD+1}")
-            if 'code' in data: raise Exception(data['msg'])
-            tr_list = [max(float(data[i][2])-float(data[i][3]), abs(float(data[i][2])-float(data[i-1][4])), abs(float(data[i][3])-float(data[i-1][4]))) for i in range(1, len(data))]
-            atr_baru = sum(tr_list) / len(tr_list)
-            new_grid = max(GRID_MIN, min(atr_baru * ATR_MULTIPLIER, GRID_MAX))
-            if abs(new_grid - GRID) > 0.1:
-                send_telegram(f"🔄 *GRID UPDATE*\n`ATR 14H: ${atr_baru:.2f}`\n`GRID BARU: ${new_grid:.2f}`")
-                cancel_all_tp_orders()
-                slots = load_slots(); new_slots = {buy: hitung_tp(float(buy)) for buy in slots.keys()}
-                save_slots(new_slots); area_yg_aktif.clear()
-            GRID = new_grid
-            last_atr = atr_baru; return
-        except: time.sleep(2)
-
-def cek_command_telegram():
-    global last_update_id, RUNNING, WAITING_FOR_LOT
-    while True:
-        try:
-            r = session.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=10", timeout=12).json()
-            for update in r.get("result", []):
-                last_update_id = update["update_id"]
-                if "message" in update and "text" in update["message"]:
-                    text = update["message"]["text"].lower()
-                    if WAITING_FOR_LOT:
-                        try:
-                            new_lot = float(text); lot_lama = save_env_lot(new_lot)
-                            send_telegram(f"✅ *LOT MINIMAL OVERRIDE*\n`LOT Lama: ${lot_lama}`\n`LOT Baru: ${new_lot}`")
-                            WAITING_FOR_LOT = False
-                        except: send_telegram("❌ Kirim angka. Contoh: 5")
-                        continue
-                    if text == "status": kirim_status()
-                    if text == "start": RUNNING = True; area_gagal.clear(); slot_gagal_sell.clear(); send_telegram("✅ *JALAN MANUAL*")
-                    if text == "stop": RUNNING = False; send_telegram("🛑 *PAUSE MANUAL*")
-                    if text == "ganti lot": WAITING_FOR_LOT = True; send_telegram(f"💰 `LOT Minimal Sekarang: ${LOT_SECRET}`\nKirim angka baru:")
-        except: time.sleep(3)
-
-def get_harga_binance():
-    global harga_sekarang
-    try: harga_sekarang = float(binance_request("GET", f"{BASE_URL}/api/v3/ticker/price?symbol={PAIR}")['price'])
-    except: pass
-    return harga_sekarang
-
-def place_buy(buy_price):
-    global area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0, LOT
-    if buy_price <= 0: return
-    with data_lock:
-        if not RUNNING: return
-        if buy_price in area_gagal: return
-        LOT = hitung_lot_otomatis(buy_price) # UPDATE TIAP BUY
-        tp_price = hitung_tp(buy_price)
-        buy_price = round(buy_price, 2); tp_price = round(tp_price, 2)
-        qty = LOT / buy_price
-        slots = load_slots()
-        if str(buy_price) in slots: return
-        saldo = get_binance_balance()
-        if saldo <= 0:
-            NOTIF_SALDO_0 = True
-            RUNNING = False; return
-        elif saldo < LOT:
-            NOTIF_SALDO_KURANG = True
-            RUNNING = False; return
-        NOTIF_SALDO_KURANG = False; NOTIF_SALDO_0 = False
-        order = binance_order("BUY", buy_price, qty)
-        if order is None: return
-        area_yg_aktif.append(int(buy_price / GRID) * GRID); slots[str(buy_price)] = tp_price
-    save_slots(slots)
-    time.sleep(2)
-    detail = get_order_details(PAIR, order['orderId'])
-    qty, quote, fee, avg = hitung_dari_fills(detail)
-    if avg == 0:
-        avg = buy_price
-        qty = LOT / avg
-        quote = LOT
-        fee = LOT * FEE_EST
-        send_telegram(f"🟢 *BUY TERISI* `Estimasi`\n`Harga: ${avg:.4f}`\n`LOT: ${LOT}`\n`TP: ${tp_price:.2f}`\n`Qty: {qty:.6f}`")
-    else:
-        send_telegram(f"🟢 *BUY TERISI*\n`Harga: ${avg:.4f}`\n`LOT: ${LOT}`\n`TP: ${tp_price:.2f}`\n`Qty: {qty:.6f}`")
-
-def cek_tp_walaupun_pause():
-    slots = load_slots()
-    to_delete = []
-    for buy_str, tp_target in list(slots.items()):
-        buy = float(buy_str); tp = float(tp_target)
-        if harga_sekarang >= tp:
-            qty = LOT / buy
-            order = binance_market_sell(qty)
-            if 'orderId' in order:
-                time.sleep(2)
-                detail = get_order_details(PAIR, order['orderId'])
-                qty_jual, quote, fee, avg = hitung_dari_fills(detail)
-                if avg == 0: avg = harga_sekarang; quote = qty * avg; fee = quote * FEE_EST
-                profit = quote - LOT - fee - (LOT * FEE_EST)
-                to_delete.append(buy_str)
-                if int(buy / GRID) * GRID in area_yg_aktif: area_yg_aktif.remove(int(buy / GRID) * GRID)
-                send_telegram(f"🚨 *SELL SAAT PAUSE*\n`Buy @${buy:.2f} -> Jual @${avg:.4f}`\n`*Profit: ${profit:.4f}*`")
-                reentry = tp
-                place_buy(reentry)
+    for i in range(50): # cek 50 grid kebawah
+        harga_buy = round(buy_rapi - (i * grid), 2)
+        if harga <= harga_buy and harga_buy not in open_orders and harga_buy not in positions:
+            if usdt >= modal:
+                qty = hitung_qty(harga_buy)
+                if safe_order('BUY', qty, harga_buy):
+                    tp = round(harga_buy + grid, 2) # [4.1]
+                    supabase.table('positions').insert({"harga_buy": harga_buy, "qty": qty, "tp": tp, "grid": grid}).execute()
+                    notif(f"✅ BUY `{harga_buy}` -> TP `{tp}`") # [7]
+                    usdt -= modal
             else:
-                error_msg = order.get('msg', '')
-                if "insufficient balance" in error_msg.lower():
-                    tp_baru = hitung_tp(buy)
-                    slots[buy_str] = tp_baru
-                    save_slots(slots)
-                    send_telegram(f"🔄 *UPDATE TP POSISI LAMA*\n`Buy @${buy:.2f}`\n`TP Lama: ${tp:.2f} -> TP Baru: ${tp_baru:.2f}`")
-                else:
-                    slot_gagal_sell[buy_str] = slot_gagal_sell.get(buy_str, 0) + 1
-                    if slot_gagal_sell[buy_str] >= MAX_GAGAL_SELL:
-                        to_delete.append(buy_str)
-    if to_delete:
-        slots = load_slots()
-        for d in to_delete:
-            if d in slots: del slots[d]
-            if d in slot_gagal_sell: del slot_gagal_sell[d]
-        save_slots(slots)
+                notif("⚠️ SALDO KURANG. PAUSE") # [2.3]
+                break
 
-def proses_trading():
-    global last_grid_buy, last_grid_time, area_yg_aktif, RUNNING, NOTIF_SALDO_KURANG, NOTIF_SALDO_0, LAST_FAIL_TIME, area_gagal, slot_gagal_sell, LOT
-    if harga_sekarang == 0: return
-    saldo = get_binance_balance()
-    cek_tp_walaupun_pause()
-    if not RUNNING and saldo >= LOT and time.time() - LAST_FAIL_TIME > 10:
-        RUNNING = True
-        area_gagal.clear()
-        slot_gagal_sell.clear()
-        send_telegram(f"✅ *BANGUN DARI MATI SURI*\n`Saldo: ${saldo:.2f} >= LOT: ${LOT}`")
-        grid_terdekat = round(harga_sekarang / GRID) * GRID
-        place_buy(grid_terdekat)
-    if not RUNNING: return
-    slots = load_slots()
-    to_delete = []
-    for buy_str, tp_target in list(slots.items()):
-        buy = float(buy_str); tp = float(tp_target)
-        if harga_sekarang >= tp:
-            qty = LOT / buy
-            order = binance_market_sell(qty)
-            if 'orderId' in order:
-                slot_gagal_sell[buy_str] = 0
-                time.sleep(2)
-                detail = get_order_details(PAIR, order['orderId'])
-                qty_jual, quote, fee, avg = hitung_dari_fills(detail)
-                if avg == 0: avg = harga_sekarang; quote = qty * avg; fee = quote * FEE_EST
-                profit = quote - LOT - fee - (LOT * FEE_EST)
-                to_delete.append(buy_str)
-                if int(buy / GRID) * GRID in area_yg_aktif: area_yg_aktif.remove(int(buy / GRID) * GRID)
-                send_telegram(f"🚨 *SELL INSTAN TP*\n`Buy @${buy:.2f} -> Jual @${avg:.4f}`\n`*Profit: ${profit:.4f}*`")
-                reentry = tp
-                if (int(reentry / GRID) * GRID) not in area_yg_aktif: place_buy(reentry)
-            else:
-                error_msg = order.get('msg', '')
-                if "insufficient balance" in error_msg.lower():
-                    tp_baru = hitung_tp(buy)
-                    slots[buy_str] = tp_baru
-                    save_slots(slots)
-                    send_telegram(f"🔄 *UPDATE TP POSISI LAMA*\n`Buy @${buy:.2f}`\n`TP Lama: ${tp:.2f} -> TP Baru: ${tp_baru:.2f}`")
-                else:
-                    slot_gagal_sell[buy_str] = slot_gagal_sell.get(buy_str, 0) + 1
-                    if slot_gagal_sell[buy_str] >= MAX_GAGAL_SELL:
-                        to_delete.append(buy_str)
-    if to_delete:
-        slots = load_slots()
-        for d in to_delete:
-            if d in slots: del slots[d]
-            if d in slot_gagal_sell: del slot_gagal_sell[d]
-        save_slots(slots)
-    grid_terdekat = round(harga_sekarang / GRID) * GRID
-    area_grid = int(grid_terdekat / GRID) * GRID
-    if area_grid not in area_yg_aktif and time.time() - last_grid_time > 3:
-        place_buy(grid_terdekat); last_grid_buy = grid_terdekat; last_grid_time = time.time()
+    # [4] CEK TP & RE-ENTRY
+    for o in exchange.fetch_closed_orders(PAIR, limit=20):
+        if o['side'] == 'SELL' and o['status'] == 'closed':
+            harga_sell = float(o['price'])
+            positions = supabase.table('positions').select('*').execute().data
+            for p in positions:
+                if abs(p['tp'] - harga_sell) < grid/2:
+                    profit = (LOT * BUFFER) + (p['qty'] * p['grid']) # [5]
+                    total_profit += profit; total_sell += 1
+                    log_db(datetime.now().isoformat(), p['harga_buy'], harga_sell, profit, "TP") # [6.4]
+                    notif(f"🎯 TP `{p['harga_buy']}` -> `{harga_sell}` Profit `{profit:.2f}`")
+                    safe_order('BUY', p['qty'], harga_sell) # [2.4] RE-ENTRY
+                    supabase.table('positions').delete().eq('id', p['id']).execute()
 
-app = Flask(__name__)
-@app.route("/")
-def health(): return "OK", 200
+# [6.3] AUTO RESUME
+def init():
+    orders = exchange.fetch_open_orders(PAIR)
+    for o in orders:
+        if o['side'] == 'SELL':
+            hb = float(o['price']) - grid_aktif
+            supabase.table('positions').insert({
+                "harga_buy": hb, "qty": float(o['amount']), "tp": float(o['price']), "grid": grid_aktif
+            }).execute()
 
-def run_bot():
-    global NOTIF_AWAL_SENT, LOT
-    try:
-        slots = load_slots()
-        get_atr(force=True)
-        harga_awal = get_harga_binance()
-        LOT = hitung_lot_otomatis(harga_awal)
-        time.sleep(1)
-        send_telegram(f"🤖 *BOT v5.70 IKUT HARGA*\n`HARGA: ${harga_awal:.2f}`", keyboard=True)
-        if not slots and RUNNING and harga_awal > 0:
-            buy_price = round(harga_awal / GRID) * GRID
-            place_buy(buy_price)
-            time.sleep(2)
-            slots_baru = load_slots()
-            if len(slots_baru) > 0 and not NOTIF_AWAL_SENT:
-                send_telegram(f"📥 *AWAL START*\n`Masang BUY LIMIT pertama di: ${buy_price:.2f}`")
-                NOTIF_AWAL_SENT = True
-        for buy_str in slots.keys(): area_yg_aktif.append(int(float(buy_str) / GRID) * GRID)
-        threading.Thread(target=cek_command_telegram, daemon=True).start()
-        while True:
-            try:
-                get_harga_binance(); proses_trading()
-                now = datetime.now(WIB)
-                if now.hour == ATR_UPDATE_HOUR and now.minute == 0 and now.second < 5:
-                    get_atr(force=True)
-                    time.sleep(5)
-                get_atr(force=False)
-                time.sleep(1)
-            except:
-                time.sleep(5)
-    except: pass
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button))
 
-threading.Thread(target=run_bot, daemon=True).start()
+    init() # [6.3]
+    schedule.every().day.at("00:00").do(lambda: cek_shift_20(exchange.fetch_ticker(PAIR)['last'], get_atr_grid())) # [1]
+    schedule.every(3).seconds.do(loop_utama)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    asyncio.run(app.initialize())
+    app.run_polling()
+    while True: schedule.run_pending(); time.sleep(1)
+
+if __name__ == "__main__": main()
