@@ -2,8 +2,8 @@ import os, time, math, ccxt, asyncio, requests, threading
 from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup # [TAMBAH ReplyKeyboardMarkup]
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters # [TAMBAH MessageHandler, filters]
 from supabase import create_client, Client
 import pytz
 
@@ -93,8 +93,31 @@ def binance_market_sell(qty):
     return exchange.create_market_sell_order(PAIR, qty)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("📊 STATUS", callback_data='status')]]
-    await update.message.reply_text("Bot v7.8.2 INFINITE GRID ON - NOTIF 1X", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [ # [GANTI JADI REPLY KEYBOARD]
+        ["📊 Status"],
+        ["▶️ Start", "⏸️ Stop"],
+        ["💰 Ganti LOT"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Bot v7.8.3 INFINITE GRID ON - NOTIF 1X", reply_markup=reply_markup)
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE): # [BARU]
+    global RUNNING, LOT
+    text = update.message.text
+
+    if text == "📊 Status":
+        await kirim_status(context)
+    elif text == "▶️ Start":
+        RUNNING = True
+        reset_notif("SALDO_KURANG") # biar bisa resume
+        notif("✅ MANUAL START")
+        await update.message.reply_text("✅ Bot di START")
+    elif text == "⏸️ Stop":
+        RUNNING = False
+        notif("🔴 MANUAL STOP")
+        await update.message.reply_text("🔴 Bot di STOP")
+    elif text == "💰 Ganti LOT":
+        await update.message.reply_text("Ketik: /setlot 10")
 
 async def setlot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global LOT
@@ -104,7 +127,7 @@ async def setlot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ LOT DIGANTI: ${LOT}")
     except: await update.message.reply_text("Format: /setlot 5")
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE): # buat tombol inline di status
     global RUNNING
     query = update.callback_query; await query.answer()
     if query.data == 'status': await kirim_status(context)
@@ -113,7 +136,7 @@ async def kirim_status(context: ContextTypes.DEFAULT_TYPE):
     saldo = exchange.fetch_balance(); usdt = saldo['USDT']['free']
     harga = exchange.fetch_ticker(PAIR)['last']
     positions = supabase.table('positions').select('*').execute().data
-    txt = f"""**📊 STATUS BOT v7.8.2**
+    txt = f"""**📊 STATUS BOT v7.8.3**
 `Status:` {'🟢 JALAN' if RUNNING else '🔴 PAUSE'}
 `Saldo USDT:` {usdt:.2f}
 `Harga:` {harga}
@@ -123,7 +146,7 @@ async def kirim_status(context: ContextTypes.DEFAULT_TYPE):
 `Profit:` {total_profit:.2f}
 `Grid_Aktif:` {grid_aktif}
 """
-    await context.bot.send_message(CHAT_ID, txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 STATUS", callback_data='status')]]))
+    await context.bot.send_message(CHAT_ID, txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 REFRESH", callback_data='status')]]))
 
 def cek_shift_20(harga, grid_baru):
     global harga_terakhir_shift, grid_aktif
@@ -167,8 +190,8 @@ def loop_utama():
             RUNNING = False; return
         if usdt >= modal and not RUNNING:
             RUNNING = True
-            notif(f"✅ AUTO RESUME. Saldo: ${usdt:.2f}") # ini boleh spam karena penting
-            reset_notif("SALDO_KURANG") # reset biar bisa notif lagi kalau kurang lagi
+            notif(f"✅ AUTO RESUME. Saldo: ${usdt:.2f}")
+            reset_notif("SALDO_KURANG")
 
         if not RUNNING: return
 
@@ -191,7 +214,7 @@ def loop_utama():
                         tp = round(harga_buy + grid, 2)
                         supabase.table('positions').insert({"harga_buy": harga_buy, "qty": qty, "tp": tp}).execute()
                         positions[harga_buy] = {"harga_buy": harga_buy, "qty": qty, "tp": tp}
-                        notif(f"✅ BUY `{harga_buy}` -> TP `{tp}`") # BUY/TP tetap notif karena duit
+                        notif(f"✅ BUY `{harga_buy}` -> TP `{tp}`")
                         usdt -= modal
 
         del open_orders_binance
@@ -205,7 +228,7 @@ def loop_utama():
                         profit = (LOT * BUFFER) + (p['qty'] * grid)
                         total_profit += profit; total_sell += 1
                         log_db(datetime.now().isoformat(), p['harga_buy'], harga_sell, profit, "TP")
-                        notif(f"🎯 TP `{p['harga_buy']}` -> `{harga_sell}` Profit `{profit:.2f}`") # TP tetap notif
+                        notif(f"🎯 TP `{p['harga_buy']}` -> `{harga_sell}` Profit `{profit:.2f}`")
                         safe_order('BUY', p['qty'], harga_sell)
                         supabase.table('positions').delete().eq('id', p['id']).execute()
                         del positions[p_id]
@@ -231,6 +254,7 @@ async def run_bot():
     app_telegram.add_handler(CommandHandler("start", start))
     app_telegram.add_handler(CommandHandler("setlot", setlot))
     app_telegram.add_handler(CallbackQueryHandler(button))
+    app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)) # [BARU INI PENTING]
 
     await app_telegram.initialize()
     await app_telegram.start()
