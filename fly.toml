@@ -5,21 +5,12 @@ primary_region = "sin"
   dockerfile = "Dockerfile"
 
 [processes]
-  web = "python main.py"
-
-[[services]]
-  internal_port = 8080
-  protocol = "tcp"
-  processes = ["web"]
-
-  [[services.ports]]
-    port = 80
-
-  [[services.ports]]
-    port = 443
-    handlers = ["tls", "http"]
+  app = "python main.py" # ganti dari web jadi app
 
 [vm]
-  memory = '300mb' # <-- GANTI DARI '256mb'
+  memory = '256mb' # bisa balikin ke 256mb
   cpu_kind = 'shared'
   cpus = 1
+
+[experimental]
+  auto_rollback = true
