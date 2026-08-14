@@ -6,3 +6,4 @@ httpx==0.25.2
 schedule==1.2.2
 pandas
 requests
+asyncio
