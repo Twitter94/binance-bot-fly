@@ -4,15 +4,22 @@ primary_region = "sin"
 [build]
   dockerfile = "Dockerfile"
 
-[http_service]
+[processes]
+  web = "python main.py"
+
+[[services]]
   internal_port = 8080
-  force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
-  processes = ["web"] # [TAMBAH INI DOANG]
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
 
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
-  memory_mb = 256
+  memory_mb = 256 # [UDAH 256]
