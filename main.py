@@ -137,13 +137,15 @@ async def place_buy(price):
     qty = LOT / price
     for i in range(3):
         try:
-            time.sleep(1.5)
+            await asyncio.sleep(1.5) # [UDAH DIGANTI]
             binance.order_market_buy(symbol=PAIR, quantity=qty) # [INI SPOT]
             tp = price + grid_aktif
             await save_position(price, qty, tp)
             await send_tele(f"🟢 *BUY SPOT*\n`{PAIR}` @ `{price}`\nQty: `{qty:.6f}`\nTP: `{tp}`", key=f"BUY_{price}")
             return
-        except Exception as e: await log_db("ERROR", f"Buy Gagal: {e}"); time.sleep(3)
+        except Exception as e:
+            await log_db("ERROR", f"Buy Gagal: {e}")
+            await asyncio.sleep(3) # [UDAH DIGANTI]
 
 async def place_sell(buy_price, reason="TP"):
     data = (await get_positions_db()).get(buy_price)
@@ -151,7 +153,7 @@ async def place_sell(buy_price, reason="TP"):
     qty = data['qty']
     for i in range(3):
         try:
-            time.sleep(1.5)
+            await asyncio.sleep(1.5) # [UDAH DIGANTI]
             binance.order_market_sell(symbol=PAIR, quantity=qty) # [INI SPOT]
             profit = BUFFER + (qty * grid_aktif)
             await delete_position(buy_price)
@@ -159,7 +161,9 @@ async def place_sell(buy_price, reason="TP"):
             await send_tele(f"🔴 *SELL SPOT/TP*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nProfit: `+{profit:.2f}` USDT", key=f"SELL_{buy_price}")
             await place_buy(buy_price)
             return
-        except Exception as e: await log_db("ERROR", f"Sell Gagal: {e}"); time.sleep(3)
+        except Exception as e:
+            await log_db("ERROR", f"Sell Gagal: {e}")
+            await asyncio.sleep(3) # [UDAH DIGANTI]
 
 # ===== [1] ATR SHIFT =====
 async def handle_atr_shift(new_grid):
