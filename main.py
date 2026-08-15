@@ -1,4 +1,4 @@
-import os, time, math, asyncio, traceback
+import os, time, math, traceback
 from datetime import datetime
 from dotenv import load_dotenv
 from binance.client import Client
@@ -30,7 +30,6 @@ BUFFER = 0.001
 
 binance = Client(API_KEY, API_SECRET)
 supa: SupaClient = create_client(SUPA_URL, SUPA_KEY)
-app = None
 GRID_ATR_AKTIF = MIN_GRID
 LAST_ATR_UPDATE = 0
 PAUSE_BOT = False
@@ -38,11 +37,10 @@ sent_notif_cache = set()
 
 def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-async def send_tele(text):
-    global app
-    if text in sent_notif_cache or not app: return
+async def send_tele(context: ContextTypes.DEFAULT_TYPE, text):
+    if text in sent_notif_cache: return
     try:
-        await app.bot.send_message(chat_id=TELE_CHAT_ID, text=text, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=TELE_CHAT_ID, text=text, parse_mode="Markdown")
         sent_notif_cache.add(text)
         await asyncio.sleep(1.5) # [7] Anti spam
     except Exception as e: log(f"Tele error: {e}")
@@ -95,7 +93,7 @@ async def can_buy(price):
     area = get_area_grid(price, grid)
     return not any(p['area'] == area for p in supa_get_positions()) # [2.2.B]
 
-async def place_buy(price):
+async def place_buy(context, price):
     global PAUSE_BOT
     grid = await get_grid_atr(); area = get_area_grid(price, grid)
     lot, fee = await get_fee_lot() # [3] Ambil rill saat order
@@ -103,7 +101,7 @@ async def place_buy(price):
     modal_butuh = lot + (lot * fee * 2) + (lot * BUFFER) # [3]
     if get_balance() < modal_butuh: # [4]
         if not PAUSE_BOT:
-            await send_tele(f"*PAUSE* Saldo kurang. Butuh: `${modal_butuh:.2f}`")
+            await send_tele(context, f"*PAUSE* Saldo kurang. Butuh: `${modal_butuh:.2f}`")
             PAUSE_BOT = True
         return False
 
@@ -111,12 +109,12 @@ async def place_buy(price):
         try:
             retry_api(binance.order_market_buy, symbol=PAIR, quantity=lot) # [2.7] Market Buy
             supa_upsert_position({"pair": PAIR, "area": area, "buy_price": price, "lot": lot, "fee": fee, "grid": grid, "time": datetime.now().isoformat()}) # [6]
-            await send_tele(f"*BUY* `@{price}`\n*AREA:* `{area}` | *GRID:* `{grid}` | *LOT:* `{lot:.5f}`") # [7]
+            await send_tele(context, f"*BUY* `@{price}`\n*AREA:* `{area}` | *GRID:* `{grid}` | *LOT:* `{lot:.5f}`") # [7]
             PAUSE_BOT = False; return True
         except Exception as e: log(f"Buy gagal: {e}")
     return False
 
-async def check_tp():
+async def check_tp(context):
     price = get_price(); grid = await get_grid_atr()
     for pos in supa_get_positions():
         tp_price = pos['buy_price'] + grid # [4.1]
@@ -131,46 +129,42 @@ async def check_tp():
                 area_masih_aktif = any(p['area'] == area_reentry for p in supa_get_positions()) # [4.3]
 
                 if not area_masih_aktif: # [4.3.A]
-                    await place_buy(tp_price)
-                    await send_tele(f"*SELL* `@{tp_price}` +`{profit:.4f}`\n-> *RE-ENTRY BUY* `@{tp_price}`")
+                    await place_buy(context, tp_price)
+                    await send_tele(context, f"*SELL* `@{tp_price}` +`{profit:.4f}`\n-> *RE-ENTRY BUY* `@{tp_price}`")
                 else: # [4.3.B]
-                    await send_tele(f"*SELL* `@{tp_price}` +`{profit:.4f}`\n*AREA MASIH AKTIF. SKIP RE-ENTRY*")
+                    await send_tele(context, f"*SELL* `@{tp_price}` +`{profit:.4f}`\n*AREA MASIH AKTIF. SKIP RE-ENTRY*")
                 return
             except Exception as e: log(f"Sell gagal: {e}")
 
-async def start_mode(): # [11]
+async def start_mode(context): # [11]
     grid = await get_grid_atr(); price = get_price()
     target_bawah = math.floor(price / grid) * grid # [11] BUY RAPI
     target_atas = math.ceil(price / grid) * grid
-    await send_tele(f"🚀 *BOT v9.0.5 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
+    await send_tele(context, f"🚀 *BOT v9.0.6 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
 
     while len(supa_get_positions()) == 0:
         price = get_price()
-        if price <= target_bawah: await place_buy(target_bawah); break
-        if price >= target_atas: await place_buy(target_atas); break
+        if price <= target_bawah: await place_buy(context, target_bawah); break
+        if price >= target_atas: await place_buy(context, target_atas); break
         await asyncio.sleep(2)
 
-async def main_loop():
-    if len(supa_get_positions()) == 0: await start_mode()
+async def main_loop_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if len(supa_get_positions()) == 0: await start_mode(context)
 
-    while True:
-        try:
-            await check_tp()
-            price = get_price(); grid = await get_grid_atr(); positions = supa_get_positions()
-            
-            if positions:
-                last_buy_area = min([p['area'] for p in positions])
-                target_buy = last_buy_area - grid # [2.1] Turun 1 grid
-            else:
-                target_buy = get_area_grid(price, grid)
+        await check_tp(context)
+        price = get_price(); grid = await get_grid_atr(); positions = supa_get_positions()
+        
+        if positions:
+            last_buy_area = min([p['area'] for p in positions])
+            target_buy = last_buy_area - grid # [2.1] Turun 1 grid
+        else:
+            target_buy = get_area_grid(price, grid)
 
-            if price <= target_buy and await can_buy(target_buy): # [2.1]
-                await place_buy(target_buy)
-
-            await asyncio.sleep(3)
-        except Exception as e:
-            log(traceback.format_exc())
-            await asyncio.sleep(10)
+        if price <= target_buy and await can_buy(target_buy): # [2.1]
+            await place_buy(context, target_buy)
+    except Exception as e:
+        log(traceback.format_exc())
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE): # [7]
     price = get_price(); grid = await get_grid_atr(); lot, fee = await get_fee_lot()
@@ -189,12 +183,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE): # [7]
 {pos_text}"""
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def main():
-    global app
+def main():
     app = ApplicationBuilder().token(TELE_TOKEN).build()
     app.add_handler(CommandHandler("status", status))
-    asyncio.create_task(main_loop()) # Jalanin loop
-    await app.run_polling()
+    
+    # KUNCI: Jalanin main_loop pake JobQueue. Bukan asyncio.run
+    app.job_queue.run_repeating(main_loop_job, interval=3, first=5)
+    
+    log("BOT v9.0.6 START POLLING")
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main() # HAPUS asyncio.run. Cukup panggil main()
