@@ -2,10 +2,10 @@ import os, time, math, traceback, threading, asyncio
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from binance.client import Client
-from supabase import create_client, Client as SupaClient
+from supabase import create_client, Client as SupaClient, ClientOptions # FIX SUPA
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from telegram.request import HTTPXRequest # ANTI TIMEOUT FLY
+from telegram.request import HTTPXRequest
 import pandas as pd
 import ta
 
@@ -28,10 +28,10 @@ MIN_GRID = 250
 MAX_GRID = 1000
 QTY_FIXED = 0.00001 # [3] SATPAM 2
 BUFFER = 0.001
-SHIFT_THRESHOLD = 0.20 # [1]
+SHIFT_THRESHOLD = 0.20
 
 binance = Client(API_KEY, API_SECRET, requests_params={'timeout': 30})
-supa: SupaClient = create_client(SUPA_URL, SUPA_KEY, options={"timeout": 30})
+supa: SupaClient = create_client(SUPA_URL, SUPA_KEY, options=ClientOptions(timeout=30)) # FIX
 app = None
 GRID_ATR_AKTIF = MIN_GRID
 LAST_ATR_UPDATE = 0
@@ -44,11 +44,11 @@ def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 async def send_tele(text):
     global app
     if text in sent_notif_cache or not app: return
-    for i in range(3): # [2.6] RETRY 3X
+    for i in range(3): # [2.6]
         try:
             await app.bot.send_message(chat_id=TELE_CHAT_ID, text=text, parse_mode="Markdown")
             sent_notif_cache.add(text)
-            await asyncio.sleep(1.5) # [7] Anti spam
+            await asyncio.sleep(1.5) # [7]
             return
         except Exception as e: 
             log(f"Tele retry {i+1}/3 error: {e}")
@@ -90,7 +90,7 @@ async def get_grid_atr(force=False):
                 await asyncio.sleep(5)
     return GRID_ATR_AKTIF
 
-async def get_order_params(price): # [3] 2 SATPAM
+async def get_order_params(price): # [3]
     try:
         info = retry_api(binance.get_symbol_info, PAIR)
         lot_step = float([f for f in info['filters'] if f['filterType']=='LOT_SIZE'][0]['stepSize'])
@@ -98,7 +98,7 @@ async def get_order_params(price): # [3] 2 SATPAM
 
         # SATPAM 1: MIN NOTIONAL $5 -> QTY = LOT_USDT / PRICE
         qty = LOT_USDT / price
-        qty = math.floor(qty / lot_step) * lot_step # bulat sesuai step binance
+        qty = math.ceil(qty / lot_step) * lot_step # dibulatkan ke ATAS
         # SATPAM 2: MIN QTY 0.00001
         qty = max(qty, QTY_FIXED)
 
@@ -177,7 +177,7 @@ async def start_mode(): # [11]
     grid = await get_grid_atr(force=True); price = get_price()
     target_bawah = math.floor(price / grid) * grid # [11] BUY RAPI
     target_atas = math.ceil(price / grid) * grid
-    await send_tele(f"🚀 *BOT v9.0.13 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
+    await send_tele(f"🚀 *BOT v9.0.14 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
 
     while len(supa_get_positions()) == 0:
         price = get_price()
@@ -205,7 +205,7 @@ async def main_loop():
             await asyncio.sleep(3)
         except Exception as e: 
             log("CRASH MAIN LOOP: " + traceback.format_exc())
-            await asyncio.sleep(10) # AUTO RESTART
+            await asyncio.sleep(10)
 
 def run_trading_loop():
     while True:
@@ -226,7 +226,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE): # [7]
 *Harga:* `${price}`
 *Saldo:* `${saldo:.4f}`
 *GRID:* `${grid}(ATR)` | *LOT:* `{LOT_USDT} USDT`
-*Fee:* `{fee*100:.3f}%` | *Butuh:* `${modal:.2f}` | *Profit:* `{total_profit:.4f}`
+*Fee:* `{fee*100:.3f}%` | *Profit:* `{total_profit:.4f}`
 *Posisi:* `{len(positions)}`
 
 *DAFTAR POSISI:*
@@ -239,7 +239,7 @@ def main():
     app = ApplicationBuilder().token(TELE_TOKEN).request(request).build()
     app.add_handler(CommandHandler("status", status))
     threading.Thread(target=run_trading_loop, daemon=True).start()
-    log("BOT v9.0.13 START POLLING")
+    log("BOT v9.0.14 START POLLING")
     app.run_polling()
 
 if __name__ == "__main__":
