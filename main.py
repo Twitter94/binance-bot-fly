@@ -1,11 +1,10 @@
-import os, time, asyncio, math
+import os, time, asyncio, math, requests
 from datetime import datetime
 import pytz
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from telegram import Bot, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from supabase import create_client
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,16 +26,39 @@ MIN_GRID, MAX_GRID = 250, 1000
 # ===== KONEKSI =====
 binance = Client(API_KEY, API_SECRET)
 tele_bot = Bot(os.getenv("TELE_TOKEN"))
-supa = create_client(os.getenv("SUPA_URL"), os.getenv("SUPA_KEY"))
 CHAT_ID = os.getenv("TELE_CHAT_ID")
+
+# [GANTI SUPABASE]
+SUPA_URL = os.getenv("SUPA_URL")
+SUPA_KEY = os.getenv("SUPA_KEY")
+HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
 grid_aktif = MIN_GRID
 atr_awal = 0
 atr_last_check = ""
 
+# ===== FUNGSI UTIL SUPABASE =====
+def supa_select(table, eq_key=None, eq_val=None):
+    url = f"{SUPA_URL}/rest/v1/{table}?select=*"
+    if eq_key: url += f"&{eq_key}=eq.{eq_val}"
+    r = requests.get(url, headers=HEADERS)
+    return r.json()
+
+def supa_insert(table, data):
+    url = f"{SUPA_URL}/rest/v1/{table}"
+    requests.post(url, json=data, headers=HEADERS)
+
+def supa_update(table, data, eq_key, eq_val):
+    url = f"{SUPA_URL}/rest/v1/{table}?{eq_key}=eq.{eq_val}"
+    requests.patch(url, json=data, headers=HEADERS)
+
+def supa_delete(table, eq_key, eq_val):
+    url = f"{SUPA_URL}/rest/v1/{table}?{eq_key}=eq.{eq_val}"
+    requests.delete(url, headers=HEADERS)
+
 # ===== FUNGSI UTIL =====
 async def log_db(level, msg, data={}):
-    supa.table("bot_logs").insert({"level": level, "message": msg, "data": data}).execute()
+    supa_insert("bot_logs", {"level": level, "message": msg, "data": data})
     print(f"[{level}] {msg}")
 
 async def send_tele(msg):
@@ -60,20 +82,23 @@ def calc_modal(price): # [3] RUMUS MODAL
     return LOT + fee + buffer
 
 async def get_positions_db():
-    res = supa.table("positions").select("*").eq("pair", PAIR).execute()
-    return {float(r['buy_price']): {"qty": float(r['qty']), "tp": float(r['tp_price'])} for r in res.data}
+    res = supa_select("positions", "pair", PAIR)
+    return {float(r['buy_price']): {"qty": float(r['qty']), "tp": float(r['tp_price'])} for r in res}
 
 async def save_position(buy_price, qty, tp_price):
-    supa.table("positions").insert({"pair": PAIR, "buy_price": buy_price, "qty": qty, "tp_price": tp_price}).execute()
+    supa_insert("positions", {"pair": PAIR, "buy_price": buy_price, "qty": qty, "tp_price": tp_price})
 
 async def delete_position(buy_price):
-    supa.table("positions").delete().eq("pair", PAIR).eq("buy_price", buy_price).execute()
+    supa_delete("positions", "and(pair.eq."+PAIR+",buy_price.eq."+str(buy_price)+")", "")
 
 async def update_tp(buy_price, new_tp):
-    supa.table("positions").update({"tp_price": new_tp}).eq("pair", PAIR).eq("buy_price", buy_price).execute()
+    supa_update("positions", {"tp_price": new_tp}, "and(pair.eq."+PAIR+",buy_price.eq."+str(buy_price)+")", "")
 
 async def update_stats(profit):
-    supa.rpc('increment', {'x': profit}).execute() # butuh function di supabase, atau pake update biasa
+    stats = supa_select("stats", "id", 1)[0]
+    new_profit = stats['total_profit'] + profit
+    new_sell = stats['total_sell'] + 1
+    supa_update("stats", {"total_profit": new_profit, "total_sell": new_sell}, "id", 1)
 
 # ===== [2] [4] FUNGSI ORDER =====
 async def check_existing_order(price):
@@ -116,6 +141,7 @@ async def place_sell(buy_price, reason="TP"):
             profit = BUFFER + (qty * grid_aktif) # [5] RUMUS PROFIT
             await delete_position(buy_price)
             await log_db("SELL", f"Sell @ {buy_price} Alasan: {reason}", {"profit": profit})
+            await update_stats(profit)
             await send_tele(f"🔴 *SELL/TP*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nProfit: `+{profit:.2f}` USDT")
             await place_buy(buy_price) # [2.4] RE-ENTRY
             return
@@ -180,7 +206,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = float(binance.get_asset_balance('USDT')['free'])
     price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
     positions = await get_positions_db()
-    stats = supa.table("stats").select("*").eq("id", 1).execute().data[0]
+    stats = supa_select("stats", "id", 1)[0]
     msg = f"""*STATUS BOT v7.0*
 `Saldo` : {balance:.2f} USDT
 `Harga` : {price}
@@ -195,4 +221,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
 app.add_handler(MessageHandler(filters.TEXT & filters.Regex('STATUS'), status))
 
-asyncio.gather(main_loop(), app.run_polling())
+async def run():
+    await asyncio.gather(main_loop(), app.run_polling())
+
+asyncio.run(run())
