@@ -1,6 +1,7 @@
 python-binance
-python-telegram-bot
+supabase
+python-telegram-bot==20.7
+ta
+pandas
+numpy
 python-dotenv
-pytz
-requests
-Pillow
