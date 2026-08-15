@@ -1,6 +1,5 @@
 python-binance==1.0.19
 supabase==2.3.4
-gotrue==2.4.0
 python-telegram-bot==20.7
 ta
 pandas
