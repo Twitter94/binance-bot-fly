@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 load_dotenv()
 wib = pytz.timezone('Asia/Jakarta')
 
-# ===== [8] CONFIG =====
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 PAIR = os.getenv("PAIR")
@@ -20,7 +19,6 @@ BUFFER = 0.003
 for k in ["BINANCE_API_KEY","BINANCE_API_SECRET","PAIR","LOT","TELE_TOKEN","TELE_CHAT_ID","SUPA_URL","SUPA_KEY"]:
     if not os.getenv(k): raise Exception(f"ENV {k} KOSONG!")
 
-# ===== [1] SETTING ATR & GRID =====
 ATR_PERIOD, ATR_TIMEFRAME, ATR_MULTIPLIER = 14, Client.KLINE_INTERVAL_1HOUR, 0.5
 ATR_UPDATE_HOUR = 0
 MIN_GRID, MAX_GRID = 250, 1000
@@ -85,10 +83,13 @@ async def get_positions_db():
 async def save_position(bp, q, tp, lot): supa_insert("positions", {"pair": PAIR, "buy_price": bp, "qty": q, "tp_price": tp, "lot": lot})
 async def delete_position(bp): supa_delete("positions", f"pair=eq.{PAIR}&buy_price=eq.{bp}", "")
 async def update_tp(bp, tp): supa_update("positions", {"tp_price": tp}, f"pair=eq.{PAIR}&buy_price=eq.{bp}", "")
+
 async def update_stats(p): 
     s = supa_select("stats", "id", 1)
-    if not s: supa_insert("stats", {"id": 1, "total_sell": 1, "total_profit": p})
-    else: supa_update("stats", {"total_profit": float(s[0]['total_profit'])+p, "total_sell": int(s[0]['total_sell'])+1}, "id", 1)
+    if not s: 
+        supa_insert("stats", {"id": 1, "total_sell": 1, "total_profit": p})
+    else: 
+        supa_update("stats", {"total_profit": float(s[0]['total_profit'])+p, "total_sell": int(s[0]['total_sell'])+1}, "id", 1)
 
 async def check_existing_order(p):
     try: return any(abs(float(o['price']) - p) < 1 for o in binance.get_open_orders(symbol=PAIR))
@@ -101,24 +102,24 @@ async def place_buy(price):
     if await check_existing_order(price): return
 
     LOT = hitung_lot(price)
-    qty = LOT / price # [RUMUS QTY v7.0]
-    modal = calc_modal(LOT) # [RUMUS MODAL v7.0]
+    qty = LOT / price
+    modal = calc_modal(LOT)
     balance = float(binance.get_asset_balance('USDT')['free'])
 
     if balance < modal:
-        if not is_paused: await send_tele(f"🔴 *PAUSE* | Harga: ${price:.2f}\nSALDO: ${balance:.4f}\nButuh: `${modal:.2f}` | LOT: `${LOT:.2f}`", key="SALDO"); is_paused = True
+        if not is_paused: await send_tele(f"🔴 *PAUSE* | Harga: ${price:.2f}\nSALDO: ${balance:.4f}\nButuh: `${modal:.2f}`", key="SALDO"); is_paused = True
         return
     if is_paused: is_paused = False; await send_tele("✅ *SALDO CUKUP - BOT LANJUT BUY*", key="SALDO_OK")
 
     for i in range(3):
         try:
-            await asyncio.sleep(1.5) # [ANTI SPAM]
+            await asyncio.sleep(1.5)
             o = binance.order_market_buy(symbol=PAIR, quantity=qty)
             rp, rq = float(o['fills'][0]['price']), float(o['executedQty'])
-            tp = rp + grid_aktif # [TP = BUY + GRID]
+            tp = rp + grid_aktif
             await save_position(rp, rq, tp, LOT)
-            await log_db("BUY", f"Buy {rq:.8f} @ {rp}", {"lot": LOT, "modal": modal})
-            await send_tele(f"🟢 *BUY DI BINANCE*\n`{PAIR}` @ `{rp:.2f}`\nLOT: `${LOT:.2f}`\nModal: `${modal:.2f}`\nTP: `{tp:.2f}`", key=f"BUY_{rp}")
+            await log_db("BUY", f"Buy {rq:.8f} @ {rp}", {"lot": LOT})
+            await send_tele(f"🟢 *BUY DI BINANCE*\n`{PAIR}` @ `{rp:.2f}`\nLOT: `${LOT:.2f}`\nTP: `{tp:.2f}`", key=f"BUY_{rp}")
             return
         except: await asyncio.sleep(3)
 
@@ -128,12 +129,12 @@ async def place_sell(bp, reason="TP"):
     for i in range(3):
         try:
             await asyncio.sleep(1.5)
-            binance.order_market_sell(symbol=PAIR, quantity=d['qty']) # [JUAL FULL]
-            profit = BUFFER + (d['qty'] * grid_aktif) # [RUMUS PROFIT v7.0]
+            binance.order_market_sell(symbol=PAIR, quantity=d['qty'])
+            profit = BUFFER + (d['qty'] * grid_aktif)
             await delete_position(bp); await update_stats(profit)
-            await log_db("SELL", f"Sell {d['qty']:.8f}", {"profit": profit, "reason": reason})
+            await log_db("SELL", f"Sell {d['qty']:.8f}", {"profit": profit})
             await send_tele(f"🔴 *SELL DI BINANCE*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nLOT: `${d['lot']:.2f}`\nProfit: `+{profit:.2f}` USDT", key=f"SELL_{bp}")
-            await place_buy(bp) # [RE-ENTRY]
+            await place_buy(bp)
             return
         except: await asyncio.sleep(3)
 
@@ -150,43 +151,58 @@ async def handle_atr_shift(ng):
 
 async def check_and_sell_passed_tp(p):
     for bp, d in (await get_positions_db()).items():
-        if p >= d['tp']: await place_sell(bp, "TP LEWAT SAAT START") # [AUTO RESUME]
+        if p >= d['tp']: await place_sell(bp, "TP LEWAT SAAT START")
 
 async def main_loop():
     global grid_aktif, atr_awal, atr_last_check
     get_fee_binance(); grid_aktif = get_atr(); atr_awal = grid_aktif
     await check_and_sell_passed_tp(float(binance.get_symbol_ticker(symbol=PAIR)['price']))
-    await send_tele(f"✅ *BOT v7.5.2 JALAN*\nGrid: `{grid_aktif}` | LOT Min: `{MIN_LOT}`", "START")
+    await send_tele(f"✅ *BOT v7.5.3 JALAN*\nGrid: `{grid_aktif}` | LOT Min: `{MIN_LOT}`", "START")
     while True:
         try:
             get_fee_binance(); p = float(binance.get_symbol_ticker(symbol=PAIR)['price']); pos = await get_positions_db()
             for bp, d in list(pos.items()): 
-                if p >= d['tp']: await place_sell(bp, "TP HIT") # [CEK TP TIAP 2 DETIK]
+                if p >= d['tp']: await place_sell(bp, "TP HIT")
             now = datetime.now(wib)
             if now.hour == ATR_UPDATE_HOUR and now.strftime("%H:%M")!= atr_last_check:
                 na = get_atr()
-                if atr_awal > 0 and abs((na-atr_awal)/atr_awal) >= 0.2: await handle_atr_shift(na) # [SHIFT 20%]
+                if atr_awal > 0 and abs((na-atr_awal)/atr_awal) >= 0.2: await handle_atr_shift(na)
                 atr_awal, atr_last_check = na, now.strftime("%H:%M")
             lb = min(pos.keys()) if pos else rapikan_ke_grid(p, grid_aktif)
-            if p <= lb - grid_aktif: await place_buy(p) # [BUY TIAP TURUN 1 GRID]
+            if p <= lb - grid_aktif: await place_buy(p)
             await asyncio.sleep(2)
         except Exception as e: await log_db("ERROR", str(e)); await send_tele(f"❌ *ERROR*\n`{str(e)}`", "ERROR"); await asyncio.sleep(60)
 
+# ===== FIX DISINI =====
 async def status(u, c):
     try:
-        get_fee_binance(); bal = float(binance.get_asset_balance('USDT')['free']); p = float(binance.get_symbol_ticker(symbol=PAIR)['price']); pos = await get_positions_db(); s = supa_select("stats", "id", 1)
-        lot = hitung_lot(p); modal = calc_modal(lot) # [LOT STATUS = LOT BUY]
-        st = "PAUSE" if is_paused else "JALAN"; em = "🔴" if is_paused else "🟢"
+        get_fee_binance()
+        bal = float(binance.get_asset_balance('USDT')['free'])
+        p = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
+        pos = await get_positions_db()
+        s = supa_select("stats", "id", 1)
+        
+        # [ANTI ERROR 0]
+        total_sell = s[0]['total_sell'] if s else 0
+        total_profit = float(s[0]['total_profit']) if s else 0.0
+        
+        lot = hitung_lot(p)
+        modal = calc_modal(lot)
+        st = "PAUSE" if is_paused else "JALAN"
+        em = "🔴" if is_paused else "🟢"
         pt = "\n".join([f"BUY ${bp:.2f} -> TP ${d['tp']:.2f} | LOT ${d['lot']:.2f}" for bp,d in sorted(pos.items())]) or "Tidak ada posisi"
+        
         msg = f"""{em} *{st}* | *Harga:* ${p:.2f}
 *SALDO:* ${bal:.4f}
 *GRID:* ${grid_aktif:.2f} | *LOT:* ${lot:.2f} | *Butuh:* ${modal:.2f}
-*Fee:* {FEE_BINANCE*100:.3f}% | *Posisi:* {len(pos)} | *Sell:* {s[0]['total_sell'] if s else 0} | *Profit:* ${float(s[0]['total_profit']) if s else 0:.2f}
+*Fee:* {FEE_BINANCE*100:.3f}% | *Posisi:* {len(pos)} | *Sell:* {total_sell} | *Profit:* ${total_profit:.2f}
 
 📌 *POSISI*
 {pt}"""
         await u.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e: await u.message.reply_text(f"ERROR: {e}")
+    except Exception as e: 
+        await u.message.reply_text(f"ERROR: {e}") # [INI YG MUNCUL "ERROR: 0"]
+        await log_db("ERROR_STATUS", str(e))
 
 async def handle_message(u, c): 
     if u.message and u.message.text.strip().upper() == "STATUS": await status(u, c)
