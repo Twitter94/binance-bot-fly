@@ -1,3 +1,4 @@
+httpx==0.23.3
 python-telegram-bot==20.3
 python-binance==1.0.19
 supabase==1.0.3
