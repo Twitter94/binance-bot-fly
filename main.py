@@ -221,7 +221,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
 app.add_handler(MessageHandler(filters.TEXT & filters.Regex('STATUS'), status))
 
-async def run():
-    await asyncio.gather(main_loop(), app.run_polling())
-
-asyncio.run(run())
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.create_task(main_loop()) # jalanin grid bot di background
+    app.run_polling() # telegram pegang loop utama
