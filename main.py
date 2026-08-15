@@ -2,12 +2,12 @@ import os, time, math, asyncio, traceback
 from datetime import datetime
 from dotenv import load_dotenv
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
+from binance.exceptions import BinanceAPIException, BinanceOrderException
 from supabase import create_client, Client as SupaClient
+from supabase.client import ClientOptions # FIX ERROR PROXY
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 import pandas as pd
-import numpy as np
 import ta
 
 load_dotenv()
@@ -29,16 +29,17 @@ ATR_MULTIPLIER = 0.5
 MIN_GRID = 250
 MAX_GRID = 1000
 QTY_FIXED = 0.00001
-BUFFER = 0.001 # 0.1% buffer
+BUFFER = 0.001 # 0.1%
 
 binance = Client(API_KEY, API_SECRET)
-supa: SupaClient = create_client(SUPA_URL, SUPA_KEY)
+supa: SupaClient = create_client(SUPA_URL, SUPA_KEY, options=ClientOptions()) # FIX
 bot = Bot(token=TELE_TOKEN)
 
 # Global
 GRID_ATR_AKTIF = MIN_GRID
 LAST_ATR_UPDATE = 0
-sent_notif_cache = set() # [7] Anti spam
+PAUSE_BOT = False
+sent_notif_cache = set()
 
 # ========== UTILS ==========
 def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
@@ -48,31 +49,34 @@ async def send_tele(text):
     try:
         await bot.send_message(chat_id=TELE_CHAT_ID, text=text, parse_mode="Markdown")
         sent_notif_cache.add(text)
-        await asyncio.sleep(1.5) # [6.2] Anti spam
-    except: pass
+        await asyncio.sleep(1.5) # [7] Anti spam
+    except Exception as e: log(f"Tele error: {e}")
 
 def get_area_grid(price, grid): return math.floor(price / grid) * grid
 
 def get_grid_atr():
     global GRID_ATR_AKTIF, LAST_ATR_UPDATE
-    if time.time() - LAST_ATR_UPDATE < 86400: return GRID_ATR_AKTIF # [1] update 00:00
+    if time.time() - LAST_ATR_UPDATE < 86400: return GRID_ATR_AKTIF
     klines = binance.get_klines(symbol=PAIR, interval=ATR_TIMEFRAME, limit=ATR_PERIOD+1)
-    df = pd.DataFrame(klines, columns=['time','o','h','l','c','v','ct','qv','n','tbv','tqv','x'])
-    df['h'] = df['h'].astype(float); df['l'] = df['l'].astype(float); df['c'] = df['c'].astype(float)
+    df = pd.DataFrame(klines, columns=['t','o','h','l','c','v','ct','qv','n','tbv','tqv','x'])
+    df[['h','l','c']] = df[['h','l','c']].astype(float)
     atr = ta.volatility.AverageTrueRange(df['h'], df['l'], df['c'], window=ATR_PERIOD).average_true_range().iloc[-1]
     grid_hitung = atr * ATR_MULTIPLIER
     GRID_ATR_AKTIF = max(MIN_GRID, min(MAX_GRID, round(grid_hitung)))
     LAST_ATR_UPDATE = time.time()
-    log(f"GRID BARU: {GRID_ATR_AKTIF}")
+    log(f"GRID UPDATE: {GRID_ATR_AKTIF}")
     return GRID_ATR_AKTIF
 
 def get_fee_lot():
-    info = binance.get_symbol_info(PAIR)
-    lot_min = float([f for f in info['filters'] if f['filterType']=='LOT_SIZE'][0]['minQty'])
-    fee = float(binance.get_trade_fee(symbol=PAIR)['tradeFee'][0]['taker'])
-    return lot_min, fee
+    try:
+        info = binance.get_symbol_info(PAIR)
+        lot_min = float([f for f in info['filters'] if f['filterType']=='LOT_SIZE'][0]['minQty'])
+        fee = float(binance.get_trade_fee(symbol=PAIR)['tradeFee'][0]['taker']) / 100
+        return lot_min, fee
+    except: return QTY_FIXED, 0.001
 
 def get_price(): return float(binance.get_symbol_ticker(symbol=PAIR)['price'])
+def get_balance(): return float(binance.get_asset_balance(asset='USDT')['free'])
 
 def supa_get_positions():
     res = supa.table("positions").select("*").eq("pair", PAIR).execute()
@@ -84,7 +88,14 @@ def supa_upsert_position(pos):
 def supa_delete_position(area):
     supa.table("positions").delete().eq("pair", PAIR).eq("area", area).execute()
 
-# ========== [2] ATURAN BUY ==========
+def retry_api(func, *args, retries=3):
+    for i in range(retries):
+        try: return func(*args)
+        except: 
+            if i == retries-1: raise
+            time.sleep(2)
+
+# ========== [2] ATURAN BUY + AREA AKTIF ==========
 def can_buy(price):
     grid = get_grid_atr()
     area = get_area_grid(price, grid)
@@ -94,34 +105,47 @@ def can_buy(price):
     return True
 
 def place_buy(price):
+    global PAUSE_BOT
     grid = get_grid_atr()
     area = get_area_grid(price, grid)
     lot_min, fee = get_fee_lot() # [2.3]
-    lot = max(LOT_SETTING, QTY_FIXED)
-    try:
-        order = binance.order_market_buy(symbol=PAIR, quantity=lot)
-        supa_upsert_position({"pair": PAIR, "area": area, "buy_price": price, "lot": lot, "fee": fee})
-        asyncio.run(send_tele(f"*BUY* `@{price}`\n*AREA:* `{area}` | *GRID:* `{grid}` | *LOT:* `{lot}`"))
-        log(f"BUY @ {price}")
-        return True
-    except BinanceAPIException as e:
-        log(f"Buy gagal: {e}")
+    lot = max(LOT_SETTING, lot_min, QTY_FIXED)
+    
+    modal_butuh = lot + (lot * fee * 2) + (lot * BUFFER) # [3]
+    if get_balance() < modal_butuh:
+        if not PAUSE_BOT:
+            asyncio.run(send_tele(f"*PAUSE* Saldo kurang. Butuh: `${modal_butuh:.2f}`"))
+            PAUSE_BOT = True
         return False
 
-# ========== [4] ATURAN SELL + RE-ENTRY BERSYARAT ==========
+    for _ in range(3): # [2.6] Retry 3x
+        try:
+            order = retry_api(binance.order_market_buy, symbol=PAIR, quantity=lot)
+            supa_upsert_position({
+                "pair": PAIR, "area": area, "buy_price": price, 
+                "lot": lot, "fee": fee, "grid": grid, "time": datetime.now().isoformat()
+            }) # [6]
+            asyncio.run(send_tele(f"*BUY* `@{price}`\n*AREA:* `{area}` | *GRID:* `{grid}` | *LOT:* `{lot}`"))
+            PAUSE_BOT = False
+            log(f"BUY @ {price}")
+            return True
+        except Exception as e: log(f"Buy gagal: {e}")
+    return False
+
+# ========== [4] ATURAN SELL / TP + RE-ENTRY BERSYARAT ==========
 def check_tp():
     price = get_price()
     grid = get_grid_atr()
     positions = supa_get_positions()
     for pos in positions:
-        tp_price = pos['buy_price'] + grid
+        tp_price = pos['buy_price'] + grid # [4.1]
         if price >= tp_price:
             area_sell = pos['area']
             lot, fee = pos['lot'], pos['fee']
             try:
-                binance.order_market_sell(symbol=PAIR, quantity=lot)
+                retry_api(binance.order_market_sell, symbol=PAIR, quantity=lot)
                 supa_delete_position(area_sell)
-                profit = BUFFER + (QTY_FIXED * grid)
+                profit = BUFFER + (QTY_FIXED * grid) # [5]
 
                 # [4.3] RE-ENTRY BERSYARAT
                 area_reentry = get_area_grid(tp_price, grid)
@@ -142,9 +166,9 @@ def start_mode():
     price = get_price()
     target_bawah = math.floor(price / grid) * grid
     target_atas = math.ceil(price / grid) * grid
-    asyncio.run(send_tele(f"*BOT START - MODE CARI GRID*\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`"))
+    asyncio.run(send_tele(f"🚀 *BOT v9.0.2 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`"))
 
-    while True:
+    while len(supa_get_positions()) == 0:
         price = get_price()
         if price <= target_bawah:
             place_buy(target_bawah); break
@@ -154,7 +178,6 @@ def start_mode():
 
 # ========== LOOP UTAMA ==========
 async def main_loop():
-    await send_tele("🚀 *BOT v9.0.2 START*")
     if len(supa_get_positions()) == 0:
         start_mode()
 
@@ -163,12 +186,15 @@ async def main_loop():
             check_tp()
             price = get_price()
             grid = get_grid_atr()
-            last_buy_area = 0
             positions = supa_get_positions()
-            if positions: last_buy_area = min([p['area'] for p in positions])
-            target_buy = last_buy_area - grid if positions else get_area_grid(price, grid)
+            
+            if positions:
+                last_buy_area = min([p['area'] for p in positions])
+                target_buy = last_buy_area - grid # [2.1] Turun 1 grid
+            else:
+                target_buy = get_area_grid(price, grid)
 
-            if price <= target_buy and can_buy(price):
+            if price <= target_buy and can_buy(target_buy):
                 place_buy(target_buy)
 
             await asyncio.sleep(3)
@@ -180,12 +206,20 @@ async def main_loop():
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price()
     grid = get_grid_atr()
+    lot_min, fee = get_fee_lot()
     positions = supa_get_positions()
-    pos_text = "\n".join([f"BUY `{p['buy_price']}` -> TP `{p['buy_price']+grid}`" for p in positions]) or "Kosong"
-    msg = f"""*STATUS BOT v9.0.2*
-*Harga:* `{price}`
-*Grid:* `{grid}(ATR)`
-*Posisi:* `{len(positions)}`
+    saldo = get_balance()
+    status_txt = "PAUSE" if PAUSE_BOT else "JALAN"
+    
+    pos_text = "\n".join([f"`BUY {p['buy_price']}` -> TP `{p['buy_price']+grid}` AREA `{p['area']}`" for p in positions]) or "Tidak ada posisi"
+    msg = f"""*STATUS {status_txt}*
+*Harga:* `${price}`
+*Saldo:* `${saldo:.4f}`
+*GRID:* `${grid}(ATR)` | *LOT:* `${LOT_SETTING}`
+*Butuh:* `${LOT_SETTING*1.004:.2f}` | *Fee:* `{fee*100:.3f}%`
+*Posisi:* `{len(positions)}` | *Sell:* 0 | *Profit:* $0.00
+
+*DAFTAR POSISI:*
 {pos_text}"""
     await update.message.reply_text(msg, parse_mode="Markdown")
 
