@@ -3,7 +3,7 @@ app = 'bahaya'
 [env]
   TZ = 'Asia/Jakarta'
 [processes]
-  app = 'python bot.py'
+  app = 'python main.py' # <-- ganti ke nama file kamu
 [[vm]]
   memory = '256mb'
   cpu_kind = 'shared'
