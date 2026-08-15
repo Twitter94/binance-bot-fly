@@ -2,6 +2,7 @@ import os, asyncio, math, requests
 from datetime import datetime
 import pytz
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 from telegram import Bot, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -25,7 +26,7 @@ ATR_UPDATE_HOUR = 0 # [00:00 WIB]
 MIN_GRID, MAX_GRID = 250, 1000
 
 # ===== KONEKSI =====
-binance = Client(API_KEY, API_SECRET)
+binance = Client(API_KEY, API_SECRET, tld='com') # [tld='com' ANTI ERROR REGION]
 tele_bot = Bot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("TELE_CHAT_ID")
 
@@ -40,19 +41,56 @@ sent_notif = set()
 is_paused = False # [UNTUK ATURAN SALDO KURANG=PAUSE]
 FEE_BINANCE = 0.001 # [DEFAULT. NANTI DIUPDATE]
 
-# ===== FUNGSI BARU: AMBIL FEE DARI BINANCE =====
+# ===== FUNGSI: AMBIL FEE DARI BINANCE =====
 def get_fee_binance():
     global FEE_BINANCE
     try:
         info = binance.get_trade_fee(symbol=PAIR)
-        FEE_BINANCE = float(info[0]['maker']) # [AMBIL FEE MAKER. KALO PAKE BNB JADI 0.00075]
+        FEE_BINANCE = float(info[0]['maker'])
         return FEE_BINANCE
-    except:
+    except Exception:
         return 0.001 # [FALLBACK 0.1%]
 
-#... semua fungsi supabase, log, keyboard sama persis...
+# ===== FUNGSI UTIL SUPABASE =====
+def supa_select(table, eq_key=None, eq_val=None):
+    try:
+        url = f"{SUPA_URL}/rest/v1/{table}?select=*"
+        if eq_key: url += f"&{eq_key}=eq.{eq_val}"
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except: return []
 
-def rapikan_ke_grid(harga, grid): return round(harga / grid) * grid # [BUY_AWAL_RAPI]
+def supa_insert(table, data):
+    try: requests.post(f"{SUPA_URL}/rest/v1/{table}", json=data, headers=HEADERS, timeout=15)
+    except: pass
+
+def supa_update(table, data, eq_key, eq_val):
+    try: requests.patch(f"{SUPA_URL}/rest/v1/{table}?{eq_key}=eq.{eq_val}", json=data, headers=HEADERS, timeout=15)
+    except: pass
+
+def supa_delete(table, eq_key, eq_val):
+    try: requests.delete(f"{SUPA_URL}/rest/v1/{table}?{eq_key}=eq.{eq_val}", headers=HEADERS, timeout=15)
+    except: pass
+
+# ===== [6] LOG =====
+async def log_db(level, msg, data={}):
+    payload = {"time": datetime.now(wib).isoformat(), "level": level, "message": msg, "data": data}
+    supa_insert("bot_logs", payload)
+    print(f"[{level}] {msg}")
+
+async def send_tele(msg, key="umum"):
+    global sent_notif
+    if key in sent_notif: return
+    try:
+        await tele_bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown", reply_markup=keyboard())
+        sent_notif.add(key)
+        await asyncio.sleep(2)
+    except Exception as e: print("TELE ERROR:", e)
+
+def keyboard(): return ReplyKeyboardMarkup([["STATUS"]], resize_keyboard=True)
+
+def rapikan_ke_grid(harga, grid): return round(harga / grid) * grid
 
 def get_atr():
     try:
@@ -63,9 +101,38 @@ def get_atr():
         return max(MIN_GRID, min(MAX_GRID, round((atr * ATR_MULTIPLIER) / 10) * 10))
     except: return MIN_GRID
 
-def calc_modal(modal_lot): return modal_lot + (modal_lot * FEE_BINANCE * 2) + (modal_lot * BUFFER) # [PAKE FEE BINANCE]
+def calc_modal(modal_lot): return modal_lot + (modal_lot * FEE_BINANCE * 2) + (modal_lot * BUFFER)
 
-#... semua fungsi db sama...
+async def get_positions_db():
+    res = supa_select("positions", "pair", PAIR)
+    out = {}
+    for r in res:
+        try: out[float(r['buy_price'])] = {"qty": float(r['qty']), "tp": float(r['tp_price']), "lot": float(r.get('lot', MIN_LOT))} # [ADA LOT]
+        except: continue
+    return out
+
+async def save_position(buy_price, qty, tp_price, lot): # [SIMPAN LOT]
+    supa_insert("positions", {"pair": PAIR, "buy_price": buy_price, "qty": qty, "tp_price": tp_price, "lot": lot})
+
+async def delete_position(buy_price):
+    supa_delete("positions", f"pair=eq.{PAIR}&buy_price=eq.{buy_price}", "")
+
+async def update_tp(buy_price, new_tp):
+    supa_update("positions", {"tp_price": new_tp}, f"pair=eq.{PAIR}&buy_price=eq.{buy_price}", "")
+
+async def update_stats(profit):
+    res = supa_select("stats", "id", 1)
+    if not res: supa_insert("stats", {"id": 1, "total_sell": 0, "total_profit": 0}); return
+    stats = res[0]
+    new_profit = float(stats.get('total_profit',0)) + profit
+    new_sell = int(stats.get('total_sell',0)) + 1
+    supa_update("stats", {"total_profit": new_profit, "total_sell": new_sell}, "id", 1)
+
+# ===== [2] [4] FUNGSI ORDER SPOT =====
+async def check_existing_order(price):
+    try: orders = binance.get_open_orders(symbol=PAIR)
+    except: return False
+    return any(abs(float(o['price']) - price) < 1 for o in orders)
 
 async def place_buy(price):
     global is_paused
@@ -78,7 +145,7 @@ async def place_buy(price):
 
     # ===== [LOT FLEKSIBEL MIN 5] =====
     lot_hitung = price * MIN_QTY_BINANCE
-    LOT = max(MIN_LOT, lot_hitung) # [INI YG KITA TAMPILIN]
+    LOT = max(MIN_LOT, lot_hitung)
     qty = MIN_QTY_BINANCE
     # =================================
 
@@ -100,28 +167,72 @@ async def place_buy(price):
             order = binance.order_market_buy(symbol=PAIR, quantity=qty)
             real_price = float(order['fills'][0]['price']) if order['fills'] else price
             tp = real_price + grid_aktif
-            await save_position(real_price, qty, tp)
+            await save_position(real_price, qty, tp, LOT) # [KIRIM LOT]
             await log_db("BUY", f"Buy {qty:.8f} @ {real_price}", {"price": real_price, "qty": qty, "lot": LOT})
-            await send_tele(f"🟢 *BUY DI BINANCE*\n`{PAIR}` @ `{real_price}`\nLOT: `${LOT:.2f}`\nQty: `{qty:.8f}`\nTP: `{tp}`", key=f"BUY_{real_price}")
+            await send_tele(f"🟢 *BUY DI BINANCE*\n`{PAIR}` @ `{real_price:.2f}`\nLOT: `${LOT:.2f}`\nQty: `{qty:.8f}`\nTP: `{tp:.2f}`", key=f"BUY_{real_price}")
             return
+        except BinanceAPIException as e: # [TANGKAP ERROR BINANCE KHUS]
+            await log_db("ERROR", f"Buy Gagal: {e}")
+            await asyncio.sleep(3)
         except Exception as e:
             await log_db("ERROR", f"Buy Gagal Retry {i+1}: {e}")
             await asyncio.sleep(3)
 
-#... place_sell dan fungsi lain sama...
+async def place_sell(buy_price, reason="TP"):
+    data = (await get_positions_db()).get(buy_price)
+    if not data: return
+    qty = data['qty']
+    lot_buy = data['lot'] # [AMBIL LOT SAAT BUY]
 
+    for i in range(3):
+        try:
+            await asyncio.sleep(1.5)
+            binance.order_market_sell(symbol=PAIR, quantity=qty)
+            profit = BUFFER + (qty * grid_aktif) # [RUMUS PROFIT v7.0]
+            await delete_position(buy_price)
+            await update_stats(profit)
+            await log_db("SELL", f"Sell {qty:.8f}", {"profit": profit, "reason": reason, "lot": lot_buy})
+            await send_tele(f"🔴 *SELL DI BINANCE*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nLOT: `${lot_buy:.2f}`\nProfit: `+{profit:.2f}` USDT", key=f"SELL_{buy_price}")
+            await place_buy(buy_price)
+            return
+        except BinanceAPIException as e:
+            await log_db("ERROR", f"Sell Gagal: {e}")
+            await asyncio.sleep(3)
+        except Exception as e:
+            await log_db("ERROR", f"Sell Gagal Retry {i+1}: {e}")
+            await asyncio.sleep(3)
+
+# ===== [1] ATR SHIFT 20% =====
+async def handle_atr_shift(new_grid):
+    global grid_aktif
+    positions = await get_positions_db()
+    if new_grid > grid_aktif:
+        await send_tele(f"⚡ *ATR NAIK 20%*\nGrid: {grid_aktif} -> {new_grid}\n*SELL INSTAN {len(positions)} POSISI*", key="ATR_UP")
+        for buy_price in list(positions.keys()): await place_sell(buy_price, reason="ATR SHIFT UP")
+    else:
+        await send_tele(f"⚡ *ATR TURUN 20%*\nGrid: {grid_aktif} -> {new_grid}\n*RESET TP SEMUA POSISI*", key="ATR_DOWN")
+        for buy_price, data in positions.items(): await update_tp(buy_price, buy_price + new_grid)
+    grid_aktif = new_grid
+
+# ===== [4.3] AUTO RESUME =====
+async def check_and_sell_passed_tp(price):
+    positions = await get_positions_db()
+    for buy_price, data in list(positions.items()):
+        if price >= data['tp']: await place_sell(buy_price, reason="TP LEWAT SAAT START")
+
+# ===== LOOP UTAMA =====
 async def main_loop():
     global grid_aktif, atr_awal, atr_last_check
-    get_fee_binance() # [AMBIL FEE PAS START]
+    get_fee_binance()
     grid_aktif = get_atr()
     atr_awal = get_atr()
     price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
     await check_and_sell_passed_tp(price)
-    await send_tele(f"✅ *BOT v7.2 INFINITE GRID JALAN*\nGrid Awal: `{grid_aktif}`\nLOT Min: `{MIN_LOT}`", key="START")
+    await send_tele(f"✅ *BOT v7.3 INFINITE GRID JALAN*\nGrid Awal: `{grid_aktif}`\nLOT Min: `{MIN_LOT}`", key="START")
 
     while True:
         try:
-            get_fee_binance() # [UPDATE FEE TIAP LOOP]
+            get_fee_binance()
             price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
             positions = await get_positions_db()
 
@@ -146,23 +257,22 @@ async def main_loop():
             await send_tele(f"❌ *ERROR*\n`{str(e)}`", key="ERROR")
             await asyncio.sleep(60)
 
-# ===== [7] TELEGRAM STATUS BARU =====
+# ===== [7] TELEGRAM =====
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        get_fee_binance() # [UPDATE FEE DULU]
+        get_fee_binance()
         balance = float(binance.get_asset_balance('USDT')['free'])
         price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
         positions = await get_positions_db()
         res = supa_select("stats", "id", 1)
         stats = res[0] if res else {"total_sell":0, "total_profit":0}
 
-        # [HITUNG LOT SAAT INI]
         lot_sekarang = max(MIN_LOT, price * 0.00001)
 
         status_text = "PAUSE" if is_paused else "JALAN"
         emoji = "🔴" if is_paused else "🟢"
 
-        posisi_text = "\n".join([f"BUY ${p:.2f} -> TP ${d['tp']:.2f}" for p,d in sorted(positions.items())]) or "Tidak ada posisi"
+        posisi_text = "\n".join([f"BUY ${p:.2f} -> TP ${d['tp']:.2f} | LOT ${d['lot']:.2f}" for p,d in sorted(positions.items())]) or "Tidak ada posisi"
 
         msg = f"""{emoji} *{status_text}* | *Harga:* ${price:.2f}
 *SALDO:* ${balance:.4f}
