@@ -49,7 +49,7 @@ def supa_select(table, eq_key=None, eq_val=None):
         if eq_key: url += f"&{eq_key}=eq.{eq_val}"
         r = requests.get(url, headers=HEADERS, timeout=10)
         data = r.json()
-        return data if isinstance(data, list) else [] # [FIX] kalau error balikin []
+        return data if isinstance(data, list) else []
     except: return []
 
 def supa_insert(table, data):
@@ -202,13 +202,13 @@ async def main_loop():
             lowest_buy = min(positions.keys()) if positions else rapikan_ke_grid(price, grid_aktif)
             if price <= lowest_buy - grid_aktif: await place_buy(price)
 
-            time.sleep(2)
+            await asyncio.sleep(2) # [GANTI time.sleep]
         except Exception as e:
             await log_db("ERROR", str(e))
             await send_tele(f"❌ *ERROR*\n`{str(e)}`", key="ERROR")
-            time.sleep(60)
+            await asyncio.sleep(60) # [GANTI time.sleep]
 
-# ===== [7] TELEGRAM - UDAH DIGANTI =====
+# ===== [7] TELEGRAM =====
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         balance = float(binance.get_asset_balance('USDT')['free'])
@@ -233,10 +233,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "STATUS":
         await status(update, context)
 
-app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
-app.add_handler(MessageHandler(filters.TEXT, handle_message))
+async def main():
+    app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+
+    # [PENTING] jalanin 2 task bareng dalam 1 loop
+    await asyncio.gather(
+        app.run_polling(allowed_updates=Update.ALL_TYPES),
+        main_loop()
+    )
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main_loop())
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    asyncio.run(main()) # [GANTI SEMUA BAGIAN BAWAH]
