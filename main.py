@@ -36,6 +36,7 @@ HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-T
 grid_aktif = MIN_GRID
 atr_awal = 0
 atr_last_check = ""
+sent_notif = set() # [SPAM 1X]
 
 # ===== FUNGSI UTIL SUPABASE =====
 def supa_select(table, eq_key=None, eq_val=None):
@@ -61,11 +62,15 @@ async def log_db(level, msg, data={}):
     supa_insert("bot_logs", {"level": level, "message": msg, "data": data})
     print(f"[{level}] {msg}")
 
-async def send_tele(msg):
-    try: await tele_bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown", reply_markup=keyboard())
+async def send_tele(msg, key="umum"): # [SPAM 1X]
+    global sent_notif
+    if key in sent_notif: return
+    try:
+        await tele_bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown", reply_markup=keyboard())
+        sent_notif.add(key)
     except: pass
 
-def keyboard(): return ReplyKeyboardMarkup([["STATUS"]], resize_keyboard=True)
+def keyboard(): return ReplyKeyboardMarkup([["STATUS"]], resize_keyboard=True) # [HAPUS START]
 
 def rapikan_ke_grid(harga, grid): return round(harga / grid) * grid # [1] BUY_AWAL_RAPI
 
@@ -83,50 +88,55 @@ def calc_modal(price): # [3] RUMUS MODAL
 
 async def get_positions_db():
     res = supa_select("positions", "pair", PAIR)
+    if not isinstance(res, list): res = []
     return {float(r['buy_price']): {"qty": float(r['qty']), "tp": float(r['tp_price'])} for r in res}
 
 async def save_position(buy_price, qty, tp_price):
     supa_insert("positions", {"pair": PAIR, "buy_price": buy_price, "qty": qty, "tp_price": tp_price})
 
 async def delete_position(buy_price):
-    supa_delete("positions", "and(pair.eq."+PAIR+",buy_price.eq."+str(buy_price)+")", "")
+    url = f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&buy_price=eq.{buy_price}"
+    requests.delete(url, headers=HEADERS)
 
 async def update_tp(buy_price, new_tp):
-    supa_update("positions", {"tp_price": new_tp}, "and(pair.eq."+PAIR+",buy_price.eq."+str(buy_price)+")", "")
+    url = f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&buy_price=eq.{buy_price}"
+    requests.patch(url, json={"tp_price": new_tp}, headers=HEADERS)
 
 async def update_stats(profit):
-    stats = supa_select("stats", "id", 1)[0]
-    new_profit = stats['total_profit'] + profit
-    new_sell = stats['total_sell'] + 1
+    res = supa_select("stats", "id", 1)
+    if not res: return
+    stats = res[0]
+    new_profit = float(stats['total_profit']) + profit
+    new_sell = int(stats['total_sell']) + 1
     supa_update("stats", {"total_profit": new_profit, "total_sell": new_sell}, "id", 1)
 
 # ===== [2] [4] FUNGSI ORDER =====
 async def check_existing_order(price):
-    orders = binance.get_open_orders(symbol=PAIR) # [2.5] ANTI DOBEL CEK EXCHANGE
+    orders = binance.get_open_orders(symbol=PAIR)
     return any(abs(float(o['price']) - price) < 1 for o in orders)
 
 async def place_buy(price):
     price = rapikan_ke_grid(price, grid_aktif)
     positions = await get_positions_db()
-    if price in positions: return # [2.2] TIDAK DOBEL
-    if await check_existing_order(price): return # [2.5] ANTI DOBEL EXCHANGE
+    if price in positions: return
+    if await check_existing_order(price): return
 
     modal = calc_modal(price)
     balance = float(binance.get_asset_balance('USDT')['free'])
-    if balance < modal: # [2.3] SALDO KURANG = PAUSE
-        await send_tele(f"⚠️ *SALDO KURANG*\nButuh: `{modal:.2f}` USDT\nBot PAUSE")
+    if balance < modal:
+        await send_tele(f"⚠️ *SALDO KURANG*\nButuh: `{modal:.2f}` USDT\nBot PAUSE", key="SALDO")
         await log_db("PAUSE", "Saldo kurang")
         return
 
     qty = LOT / price
-    for i in range(3): # [2.6] RETRY 3x
+    for i in range(3):
         try:
-            time.sleep(1.5) # [6.2] ANTI SPAM
+            time.sleep(1.5)
             binance.order_market_buy(symbol=PAIR, quantity=qty)
-            tp = price + grid_aktif # [4.1]
+            tp = price + grid_aktif
             await save_position(price, qty, tp)
             await log_db("BUY", f"Buy {qty:.6f} @ {price}", {"price": price})
-            await send_tele(f"🟢 *BUY*\n`{PAIR}` @ `{price}`\nQty: `{qty:.6f}`\nTP: `{tp}`")
+            await send_tele(f"🟢 *BUY*\n`{PAIR}` @ `{price}`\nQty: `{qty:.6f}`\nTP: `{tp}`", key=f"BUY_{price}")
             return
         except Exception as e: await log_db("ERROR", f"Buy Gagal: {e}"); time.sleep(3)
 
@@ -137,13 +147,13 @@ async def place_sell(buy_price, reason="TP"):
     for i in range(3):
         try:
             time.sleep(1.5)
-            binance.order_market_sell(symbol=PAIR, quantity=qty) # [4.2] JUAL FULL
-            profit = BUFFER + (qty * grid_aktif) # [5] RUMUS PROFIT
+            binance.order_market_sell(symbol=PAIR, quantity=qty)
+            profit = BUFFER + (qty * grid_aktif)
             await delete_position(buy_price)
             await log_db("SELL", f"Sell @ {buy_price} Alasan: {reason}", {"profit": profit})
             await update_stats(profit)
-            await send_tele(f"🔴 *SELL/TP*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nProfit: `+{profit:.2f}` USDT")
-            await place_buy(buy_price) # [2.4] RE-ENTRY
+            await send_tele(f"🔴 *SELL/TP*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nProfit: `+{profit:.2f}` USDT", key=f"SELL_{buy_price}")
+            await place_buy(buy_price)
             return
         except Exception as e: await log_db("ERROR", f"Sell Gagal: {e}"); time.sleep(3)
 
@@ -151,12 +161,12 @@ async def place_sell(buy_price, reason="TP"):
 async def handle_atr_shift(new_grid):
     global grid_aktif
     positions = await get_positions_db()
-    if new_grid > grid_aktif: # A. NAIK 20%: SELL INSTAN semua
-        await send_tele(f"⚡ *ATR NAIK 20%*\nGrid: {grid_aktif} -> {new_grid}\n*SELL INSTAN {len(positions)} POSISI*")
+    if new_grid > grid_aktif:
+        await send_tele(f"⚡ *ATR NAIK 20%*\nGrid: {grid_aktif} -> {new_grid}\n*SELL INSTAN {len(positions)} POSISI*", key="ATR_UP")
         for buy_price in list(positions.keys()):
             await place_sell(buy_price, reason="ATR SHIFT UP")
-    else: # B. TURUN 20%: RESET TP
-        await send_tele(f"⚡ *ATR TURUN 20%*\nGrid: {grid_aktif} -> {new_grid}\n*RESET TP SEMUA POSISI*")
+    else:
+        await send_tele(f"⚡ *ATR TURUN 20%*\nGrid: {grid_aktif} -> {new_grid}\n*RESET TP SEMUA POSISI*", key="ATR_DOWN")
         for buy_price, data in positions.items():
             new_tp = buy_price + new_grid
             await update_tp(buy_price, new_tp)
@@ -165,32 +175,29 @@ async def handle_atr_shift(new_grid):
 # ===== LOOP UTAMA =====
 async def main_loop():
     global grid_aktif, atr_awal, atr_last_check
-    grid_aktif = get_atr() # Set grid awal
+    grid_aktif = get_atr()
     atr_awal = get_atr()
-    await send_tele(f"✅ *BOT v7.0 JALAN*\nGrid Awal: `{grid_aktif}`")
+    await send_tele(f"✅ *BOT v7.0 JALAN*\nGrid Awal: `{grid_aktif}`", key="START")
 
     while True:
         try:
             price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
             positions = await get_positions_db()
 
-            # [4.3] AUTO RESUME + CEK TP LEWAT
             for buy_price, data in list(positions.items()):
                 if price >= data['tp']:
                     await place_sell(buy_price, reason="TP HIT")
 
-            # [1] ATR_UPDATE jam 00:00 WIB
             now_wib = datetime.now(wib)
             if now_wib.hour == ATR_UPDATE_HOUR and now_wib.strftime("%H:%M")!= atr_last_check:
                 atr_baru = get_atr()
                 if atr_awal > 0:
                     perubahan = (atr_baru - atr_awal) / atr_awal
-                    if abs(perubahan) >= 0.2: # 20%
+                    if abs(perubahan) >= 0.2:
                         await handle_atr_shift(atr_baru)
                 atr_awal = atr_baru
                 atr_last_check = now_wib.strftime("%H:%M")
 
-            # [2.1] BUY TIAP GRID TURUN
             lowest_buy = min(positions.keys()) if positions else rapikan_ke_grid(price, grid_aktif)
             if price <= lowest_buy - grid_aktif:
                 await place_buy(price)
@@ -198,7 +205,7 @@ async def main_loop():
             time.sleep(2)
         except Exception as e:
             await log_db("ERROR", str(e))
-            await send_tele(f"❌ *ERROR*\n`{str(e)}`")
+            await send_tele(f"❌ *ERROR*\n`{str(e)}`", key="ERROR")
             time.sleep(60)
 
 # ===== [7] TELEGRAM =====
@@ -206,7 +213,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = float(binance.get_asset_balance('USDT')['free'])
     price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
     positions = await get_positions_db()
-    stats = supa_select("stats", "id", 1)[0]
+    stats = supa_select("stats", "id", 1)
+    if not stats: stats = [{"total_sell":0, "total_profit":0}]
+    else: stats = stats[0]
     msg = f"""*STATUS BOT v7.0*
 `Saldo` : {balance:.2f} USDT
 `Harga` : {price}
@@ -215,13 +224,17 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 `Total Sell` : {stats['total_sell']}
 `Profit` : {stats['total_profit']:.2f} USDT
 `ATR/Grid` : {atr_awal:.2f} / {grid_aktif}
-`Posisi TP` : {list(positions.values())}"""
+`Posisi` : {len(positions)}"""
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE): # [FIX STATUS]
+    if update.message.text == "STATUS":
+        await status(update, context)
+
 app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
-app.add_handler(MessageHandler(filters.TEXT & filters.Regex('STATUS'), status))
+app.add_handler(MessageHandler(filters.TEXT, handle_message)) # [FIX] tangkep semua text
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
-    loop.create_task(main_loop()) # jalanin grid bot di background
-    app.run_polling() # telegram pegang loop utama
+    loop.create_task(main_loop())
+    app.run_polling()
