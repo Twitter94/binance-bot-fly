@@ -208,7 +208,7 @@ async def main_loop():
             await send_tele(f"❌ *ERROR*\n`{str(e)}`", key="ERROR")
             time.sleep(60)
 
-# ===== [7] TELEGRAM =====
+# ===== [7] TELEGRAM - UDAH DIGANTI =====
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         balance = float(binance.get_asset_balance('USDT')['free'])
@@ -228,13 +228,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e: await update.message.reply_text(f"ERROR: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip().upper() == "STATUS":
+    if not update.message: return
+    text = update.message.text.strip().upper()
+    if text == "STATUS":
         await status(update, context)
 
 app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.create_task(main_loop())
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
