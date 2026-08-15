@@ -26,7 +26,7 @@ ATR_UPDATE_HOUR = 0 # [00:00 WIB]
 MIN_GRID, MAX_GRID = 250, 1000
 
 # ===== KONEKSI =====
-binance = Client(API_KEY, API_SECRET, tld='com') # [tld='com' ANTI ERROR REGION]
+binance = Client(API_KEY, API_SECRET, tld='com')
 tele_bot = Bot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("TELE_CHAT_ID")
 
@@ -38,10 +38,10 @@ grid_aktif = MIN_GRID
 atr_awal = 0
 atr_last_check = ""
 sent_notif = set()
-is_paused = False # [UNTUK ATURAN SALDO KURANG=PAUSE]
-FEE_BINANCE = 0.001 # [DEFAULT. NANTI DIUPDATE]
+is_paused = False
+FEE_BINANCE = 0.001
 
-# ===== FUNGSI: AMBIL FEE DARI BINANCE =====
+# ===== FUNGSI: AMBIL FEE RILL DARI BINANCE =====
 def get_fee_binance():
     global FEE_BINANCE
     try:
@@ -49,7 +49,7 @@ def get_fee_binance():
         FEE_BINANCE = float(info[0]['maker'])
         return FEE_BINANCE
     except Exception:
-        return 0.001 # [FALLBACK 0.1%]
+        return 0.001
 
 # ===== FUNGSI UTIL SUPABASE =====
 def supa_select(table, eq_key=None, eq_val=None):
@@ -101,17 +101,17 @@ def get_atr():
         return max(MIN_GRID, min(MAX_GRID, round((atr * ATR_MULTIPLIER) / 10) * 10))
     except: return MIN_GRID
 
-def calc_modal(modal_lot): return modal_lot + (modal_lot * FEE_BINANCE * 2) + (modal_lot * BUFFER)
+def calc_modal(modal_lot): return modal_lot + (modal_lot * FEE_BINANCE * 2) + (modal_lot * BUFFER) # [RUMUS MODAL v7.0]
 
 async def get_positions_db():
     res = supa_select("positions", "pair", PAIR)
     out = {}
     for r in res:
-        try: out[float(r['buy_price'])] = {"qty": float(r['qty']), "tp": float(r['tp_price']), "lot": float(r.get('lot', MIN_LOT))} # [ADA LOT]
+        try: out[float(r['buy_price'])] = {"qty": float(r['qty']), "tp": float(r['tp_price']), "lot": float(r.get('lot', MIN_LOT))}
         except: continue
     return out
 
-async def save_position(buy_price, qty, tp_price, lot): # [SIMPAN LOT]
+async def save_position(buy_price, qty, tp_price, lot):
     supa_insert("positions", {"pair": PAIR, "buy_price": buy_price, "qty": qty, "tp_price": tp_price, "lot": lot})
 
 async def delete_position(buy_price):
@@ -134,66 +134,65 @@ async def check_existing_order(price):
     except: return False
     return any(abs(float(o['price']) - price) < 1 for o in orders)
 
-async def place_buy(price):
+async def place_buy(price): # [ATURAN BUY v7.0]
     global is_paused
     price = rapikan_ke_grid(price, grid_aktif)
     positions = await get_positions_db()
-    if price in positions: return
-    if await check_existing_order(price): return
+    if price in positions: return # [TIDAK DOBEL]
+    if await check_existing_order(price): return # [ANTI DOBEL ORDER]
 
-    MIN_QTY_BINANCE = 0.00001
+    # ===== [RUMUS LOT + QTY v7.0] =====
+    lot_hitung = price * 0.00001 # [CEK MIN NOTIONAL]
+    LOT = max(MIN_LOT, lot_hitung) # [MIN 5 USDT]
+    qty = LOT / price # [RUMUS QTY = LOT / HARGA]
+    # ==================================
 
-    # ===== [LOT FLEKSIBEL MIN 5] =====
-    lot_hitung = price * MIN_QTY_BINANCE
-    LOT = max(MIN_LOT, lot_hitung)
-    qty = MIN_QTY_BINANCE
-    # =================================
-
-    modal = calc_modal(LOT)
+    modal = calc_modal(LOT) # [MODAL = LOT + FEE*2 + BUFFER]
     try: balance = float(binance.get_asset_balance('USDT')['free'])
     except: balance = 0
 
-    if balance < modal:
+    if balance < modal: # [SALDO KURANG = PAUSE]
         if not is_paused:
-            await send_tele(f"🔴 *PAUSE* | Harga: ${price:.2f}\nSALDO: ${balance:.4f}\nButuh LOT: ${LOT:.2f}", key="SALDO")
+            await send_tele(f"🔴 *PAUSE* | Harga: ${price:.2f}\nSALDO: ${balance:.4f}\nButuh: `${modal:.2f}` | LOT: `${LOT:.2f}`", key="SALDO")
             is_paused = True
         return
-    if is_paused:
+    if is_paused: # [LANJUT OTOMATIS]
         is_paused = False; await send_tele("✅ *SALDO CUKUP - BOT LANJUT BUY*", key="SALDO_OK")
 
-    for i in range(3):
+    for i in range(3): # [RETRY 3X]
         try:
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.5) # [ANTI SPAM]
             order = binance.order_market_buy(symbol=PAIR, quantity=qty)
             real_price = float(order['fills'][0]['price']) if order['fills'] else price
-            tp = real_price + grid_aktif
-            await save_position(real_price, qty, tp, LOT) # [KIRIM LOT]
-            await log_db("BUY", f"Buy {qty:.8f} @ {real_price}", {"price": real_price, "qty": qty, "lot": LOT})
-            await send_tele(f"🟢 *BUY DI BINANCE*\n`{PAIR}` @ `{real_price:.2f}`\nLOT: `${LOT:.2f}`\nQty: `{qty:.8f}`\nTP: `{tp:.2f}`", key=f"BUY_{real_price}")
+            real_qty = float(order['executedQty']) # [PAKE QTY REAL]
+            tp = real_price + grid_aktif # [TP = BUY + GRID]
+            await save_position(real_price, real_qty, tp, LOT)
+            await log_db("BUY", f"Buy {real_qty:.8f} @ {real_price}", {"price": real_price, "qty": real_qty, "lot": LOT})
+            await send_tele(f"🟢 *BUY DI BINANCE*\n`{PAIR}` @ `{real_price:.2f}`\nLOT: `${LOT:.2f}`\nQty: `{real_qty:.8f}`\nTP: `{tp:.2f}`", key=f"BUY_{real_price}")
             return
-        except BinanceAPIException as e: # [TANGKAP ERROR BINANCE KHUS]
+        except BinanceAPIException as e:
             await log_db("ERROR", f"Buy Gagal: {e}")
             await asyncio.sleep(3)
         except Exception as e:
             await log_db("ERROR", f"Buy Gagal Retry {i+1}: {e}")
             await asyncio.sleep(3)
 
-async def place_sell(buy_price, reason="TP"):
+async def place_sell(buy_price, reason="TP"): # [ATURAN SELL v7.0]
     data = (await get_positions_db()).get(buy_price)
     if not data: return
     qty = data['qty']
-    lot_buy = data['lot'] # [AMBIL LOT SAAT BUY]
+    lot_buy = data['lot']
 
-    for i in range(3):
+    for i in range(3): # [RETRY 3X]
         try:
-            await asyncio.sleep(1.5)
-            binance.order_market_sell(symbol=PAIR, quantity=qty)
-            profit = BUFFER + (qty * grid_aktif) # [RUMUS PROFIT v7.0]
+            await asyncio.sleep(1.5) # [ANTI SPAM]
+            binance.order_market_sell(symbol=PAIR, quantity=qty) # [JUAL FULL]
+            profit = BUFFER + (qty * grid_aktif) # [RUMUS PROFIT = BUFFER + QTY*GRID]
             await delete_position(buy_price)
             await update_stats(profit)
             await log_db("SELL", f"Sell {qty:.8f}", {"profit": profit, "reason": reason, "lot": lot_buy})
             await send_tele(f"🔴 *SELL DI BINANCE*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nLOT: `${lot_buy:.2f}`\nProfit: `+{profit:.2f}` USDT", key=f"SELL_{buy_price}")
-            await place_buy(buy_price)
+            await place_buy(buy_price) # [RE-ENTRY]
             return
         except BinanceAPIException as e:
             await log_db("ERROR", f"Sell Gagal: {e}")
@@ -206,10 +205,10 @@ async def place_sell(buy_price, reason="TP"):
 async def handle_atr_shift(new_grid):
     global grid_aktif
     positions = await get_positions_db()
-    if new_grid > grid_aktif:
+    if new_grid > grid_aktif: # [NAIK 20% = SELL INSTAN]
         await send_tele(f"⚡ *ATR NAIK 20%*\nGrid: {grid_aktif} -> {new_grid}\n*SELL INSTAN {len(positions)} POSISI*", key="ATR_UP")
         for buy_price in list(positions.keys()): await place_sell(buy_price, reason="ATR SHIFT UP")
-    else:
+    else: # [TURUN 20% = RESET TP]
         await send_tele(f"⚡ *ATR TURUN 20%*\nGrid: {grid_aktif} -> {new_grid}\n*RESET TP SEMUA POSISI*", key="ATR_DOWN")
         for buy_price, data in positions.items(): await update_tp(buy_price, buy_price + new_grid)
     grid_aktif = new_grid
@@ -227,29 +226,29 @@ async def main_loop():
     grid_aktif = get_atr()
     atr_awal = get_atr()
     price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
-    await check_and_sell_passed_tp(price)
-    await send_tele(f"✅ *BOT v7.3 INFINITE GRID JALAN*\nGrid Awal: `{grid_aktif}`\nLOT Min: `{MIN_LOT}`", key="START")
+    await check_and_sell_passed_tp(price) # [AUTO RESUME DULU]
+    await send_tele(f"✅ *BOT v7.4 INFINITE GRID JALAN*\nGrid Awal: `{grid_aktif}`\nLOT Min: `{MIN_LOT}`", key="START")
 
     while True:
         try:
-            get_fee_binance()
+            get_fee_binance() # [UPDATE FEE RILL]
             price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
             positions = await get_positions_db()
 
-            for buy_price, data in list(positions.items()):
+            for buy_price, data in list(positions.items()): # [CEK TP]
                 if price >= data['tp']: await place_sell(buy_price, reason="TP HIT")
 
             now_wib = datetime.now(wib)
-            if now_wib.hour == ATR_UPDATE_HOUR and now_wib.strftime("%H:%M")!= atr_last_check:
+            if now_wib.hour == ATR_UPDATE_HOUR and now_wib.strftime("%H:%M")!= atr_last_check: # [00:00 WIB]
                 atr_baru = get_atr()
                 if atr_awal > 0:
                     perubahan = (atr_baru - atr_awal) / atr_awal
-                    if abs(perubahan) >= 0.2: await handle_atr_shift(atr_baru)
+                    if abs(perubahan) >= 0.2: await handle_atr_shift(atr_baru) # [SHIFT 20%]
                 atr_awal = atr_baru
                 atr_last_check = now_wib.strftime("%H:%M")
 
             lowest_buy = min(positions.keys()) if positions else rapikan_ke_grid(price, grid_aktif)
-            if price <= lowest_buy - grid_aktif: await place_buy(price)
+            if price <= lowest_buy - grid_aktif: await place_buy(price) # [BUY TIAP TURUN 1 GRID]
 
             await asyncio.sleep(2)
         except Exception as e:
@@ -257,7 +256,7 @@ async def main_loop():
             await send_tele(f"❌ *ERROR*\n`{str(e)}`", key="ERROR")
             await asyncio.sleep(60)
 
-# ===== [7] TELEGRAM =====
+# ===== [7] TELEGRAM MONITORING =====
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         get_fee_binance()
@@ -277,7 +276,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"""{emoji} *{status_text}* | *Harga:* ${price:.2f}
 *SALDO:* ${balance:.4f}
 *GRID:* ${grid_aktif:.2f} | *LOT:* ${lot_sekarang:.2f} | *Min:* ${MIN_LOT:.1f}
-*Fee:* {FEE_BINANCE*100:.3f}% | *Posisi:* {len(positions)}
+*Fee:* {FEE_BINANCE*100:.3f}% | *Posisi:* {len(positions)} | *Sell:* {stats['total_sell']} | *Profit:* ${float(stats['total_profit']):.2f}
 
 📌 *POSISI*
 {posisi_text}"""
