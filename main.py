@@ -18,7 +18,6 @@ LOT = float(os.getenv("LOT") or 0)
 FEE = 0.001
 BUFFER = 0.003
 
-# CEK ENV WAJIB
 for k in ["BINANCE_API_KEY","BINANCE_API_SECRET","PAIR","LOT","TELE_TOKEN","TELE_CHAT_ID","SUPA_URL","SUPA_KEY"]:
     if not os.getenv(k): raise Exception(f"ENV {k} KOSONG!")
 
@@ -32,7 +31,6 @@ binance = Client(API_KEY, API_SECRET)
 tele_bot = Bot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("TELE_CHAT_ID")
 
-# [GANTI SUPABASE]
 SUPA_URL = os.getenv("SUPA_URL")
 SUPA_KEY = os.getenv("SUPA_KEY")
 HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
@@ -117,7 +115,7 @@ async def update_stats(profit):
     new_sell = int(stats.get('total_sell',0)) + 1
     supa_update("stats", {"total_profit": new_profit, "total_sell": new_sell}, "id", 1)
 
-# ===== [2] [4] FUNGSI ORDER =====
+# ===== [2] [4] FUNGSI ORDER SPOT =====
 async def check_existing_order(price):
     try: orders = binance.get_open_orders(symbol=PAIR)
     except: return False
@@ -140,10 +138,10 @@ async def place_buy(price):
     for i in range(3):
         try:
             time.sleep(1.5)
-            binance.order_market_buy(symbol=PAIR, quantity=qty)
+            binance.order_market_buy(symbol=PAIR, quantity=qty) # [INI SPOT]
             tp = price + grid_aktif
             await save_position(price, qty, tp)
-            await send_tele(f"🟢 *BUY*\n`{PAIR}` @ `{price}`\nQty: `{qty:.6f}`\nTP: `{tp}`", key=f"BUY_{price}")
+            await send_tele(f"🟢 *BUY SPOT*\n`{PAIR}` @ `{price}`\nQty: `{qty:.6f}`\nTP: `{tp}`", key=f"BUY_{price}")
             return
         except Exception as e: await log_db("ERROR", f"Buy Gagal: {e}"); time.sleep(3)
 
@@ -154,11 +152,11 @@ async def place_sell(buy_price, reason="TP"):
     for i in range(3):
         try:
             time.sleep(1.5)
-            binance.order_market_sell(symbol=PAIR, quantity=qty)
+            binance.order_market_sell(symbol=PAIR, quantity=qty) # [INI SPOT]
             profit = BUFFER + (qty * grid_aktif)
             await delete_position(buy_price)
             await update_stats(profit)
-            await send_tele(f"🔴 *SELL/TP*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nProfit: `+{profit:.2f}` USDT", key=f"SELL_{buy_price}")
+            await send_tele(f"🔴 *SELL SPOT/TP*\n`{PAIR}` @ Market\nAlasan: `{reason}`\nProfit: `+{profit:.2f}` USDT", key=f"SELL_{buy_price}")
             await place_buy(buy_price)
             return
         except Exception as e: await log_db("ERROR", f"Sell Gagal: {e}"); time.sleep(3)
@@ -180,7 +178,7 @@ async def main_loop():
     global grid_aktif, atr_awal, atr_last_check
     grid_aktif = get_atr()
     atr_awal = get_atr()
-    await send_tele(f"✅ *BOT v7.0 JALAN*\nGrid Awal: `{grid_aktif}`", key="START")
+    await send_tele(f"✅ *BOT v7.0 SPOT JALAN*\nGrid Awal: `{grid_aktif}`", key="START")
 
     while True:
         try:
@@ -202,13 +200,13 @@ async def main_loop():
             lowest_buy = min(positions.keys()) if positions else rapikan_ke_grid(price, grid_aktif)
             if price <= lowest_buy - grid_aktif: await place_buy(price)
 
-            await asyncio.sleep(2) # [GANTI time.sleep]
+            await asyncio.sleep(2)
         except Exception as e:
             await log_db("ERROR", str(e))
             await send_tele(f"❌ *ERROR*\n`{str(e)}`", key="ERROR")
-            await asyncio.sleep(60) # [GANTI time.sleep]
+            await asyncio.sleep(60)
 
-# ===== [7] TELEGRAM =====
+# ===== [7] TELEGRAM - FIX FLY.IO =====
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         balance = float(binance.get_asset_balance('USDT')['free'])
@@ -216,7 +214,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         positions = await get_positions_db()
         res = supa_select("stats", "id", 1)
         stats = res[0] if res else {"total_sell":0, "total_profit":0}
-        msg = f"""*STATUS BOT v7.0*
+        msg = f"""*STATUS BOT v7.0 SPOT*
 `Saldo` : {balance:.2f} USDT
 `Harga` : {price}
 `LOT` : {LOT}
@@ -233,15 +231,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "STATUS":
         await status(update, context)
 
-async def main():
-    app = Application.builder().token(os.getenv("TELE_TOKEN")).build()
-    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+async def on_startup(app: Application):
+    asyncio.create_task(main_loop()) # [KUNCI] jalanin loop di background
 
-    # [PENTING] jalanin 2 task bareng dalam 1 loop
-    await asyncio.gather(
-        app.run_polling(allowed_updates=Update.ALL_TYPES),
-        main_loop()
-    )
+def main():
+    app = Application.builder().token(os.getenv("TELE_TOKEN")).post_init(on_startup).build()
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main()) # [GANTI SEMUA BAGIAN BAWAH]
+    main() # [JANGAN PAKE asyncio.run]
