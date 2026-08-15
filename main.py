@@ -1,12 +1,11 @@
-import os, asyncio, math, requests, io, threading
+import os, asyncio, math, requests
 from datetime import datetime
 import pytz
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from telegram import Bot, ReplyKeyboardMarkup, Update, InputFile
+from telegram import Bot, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
-from PIL import Image, ImageDraw, ImageFont
 
 load_dotenv()
 wib = pytz.timezone('Asia/Jakarta')
@@ -167,7 +166,7 @@ async def place_buy(price): # [ATURAN BUY v7.0]
             real_price = float(order['fills'][0]['price']) if order['fills'] else price
             real_qty = float(order['executedQty']) # [PAKE QTY REAL]
             tp = real_price + grid_aktif # [TP = BUY + GRID]
-            await save_position(real_price, real_qty, tp, LOT) # [SIMPAN LOT AWAL BUY]
+            await save_position(real_price, real_qty, tp, LOT)
             await log_db("BUY", f"Buy {real_qty:.8f} @ {real_price}", {"price": real_price, "qty": real_qty, "lot": LOT})
             await send_tele(f"🟢 *BUY DI BINANCE*\n`{PAIR}` @ `{real_price:.2f}`\nLOT: `${LOT:.2f}`\nQty: `{real_qty:.8f}`\nTP: `{tp:.2f}`", key=f"BUY_{real_price}")
             return
@@ -220,38 +219,6 @@ async def check_and_sell_passed_tp(price):
     for buy_price, data in list(positions.items()):
         if price >= data['tp']: await place_sell(buy_price, reason="TP LEWAT SAAT START")
 
-# ===== [BARU] BIKIN GAMBAR STATUS =====
-def buat_gambar_status(data):
-    img = Image.new('RGB', (430, 580), color='#111111')
-    draw = ImageDraw.Draw(img)
-    try: font1 = ImageFont.truetype("arial.ttf", 22)
-    except: font1 = ImageFont.load_default()
-    try: font2 = ImageFont.truetype("arial.ttf", 15)
-    except: font2 = ImageFont.load_default()
-
-    y = 15
-    draw.text((15, y), f"STATUS: {data['status']}", fill="#00FF00" if data['status']=="JALAN" else "#FF0000", font=font1); y+=40
-    draw.text((15, y), f"Harga: ${data['harga']:.2f}", fill="white", font=font1); y+=30
-    draw.text((15, y), f"Saldo: ${data['saldo']:.4f}", fill="white", font=font2); y+=25
-    draw.text((15, y), f"GRID: ${data['grid']:.2f} | LOT: ${data['lot']:.2f}", fill="#00D4FF", font=font2); y+=25
-    draw.text((15, y), f"Butuh: ${data['modal']:.2f} | Fee: {data['fee']:.3f}%", fill="#00D4FF", font=font2); y+=25
-    draw.text((15, y), f"Posisi: {data['jml_posisi']} | Sell: {data['sell']} | Profit: ${data['profit']:.2f}", fill="white", font=font2); y+=35
-    draw.line((15, y, 415, y), fill="#333"); y+=15
-    draw.text((15, y), "DAFTAR POSISI:", fill="yellow", font=font2); y+=25
-
-    if data['posisi_list']:
-        for p in data['posisi_list'][:7]:
-            draw.text((15, y), f"BUY ${p['buy']:.2f} -> TP ${p['tp']:.2f}", fill="white", font=font2); y+=20
-            draw.text((15, y), f" LOT AWAL: ${p['lot']:.2f}", fill="#AAAAAA", font=font2); y+=20
-    else:
-        draw.text((15, y), "Tidak ada posisi", fill="#AAAAAA", font=font2)
-
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf
-
-
 # ===== LOOP UTAMA =====
 async def main_loop():
     global grid_aktif, atr_awal, atr_last_check
@@ -260,7 +227,7 @@ async def main_loop():
     atr_awal = get_atr()
     price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
     await check_and_sell_passed_tp(price) # [AUTO RESUME DULU]
-    await send_tele(f"✅ *BOT v7.6.1 INFINITE GRID JALAN*\nGrid Awal: `{grid_aktif}`\nLOT Min: `{MIN_LOT}`", key="START")
+    await send_tele(f"✅ *BOT v7.6.2 INFINITE GRID JALAN*\nGrid Awal: `{grid_aktif}`\nLOT Min: `{MIN_LOT}`", key="START")
 
     while True:
         try:
@@ -289,7 +256,7 @@ async def main_loop():
             await send_tele(f"❌ *ERROR*\n`{str(e)}`", key="ERROR")
             await asyncio.sleep(60)
 
-# ===== [7] TELEGRAM MONITORING - UDAH GAMBAR =====
+# ===== [7] TELEGRAM MONITORING - FORMAT KAYA GAMBAR =====
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         get_fee_binance()
@@ -299,25 +266,32 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = supa_select("stats", "id", 1)
         stats = res[0] if res else {"total_sell":0, "total_profit":0}
 
-        lot_sekarang = max(MIN_LOT, price * 0.00001) # [LOT SAAT INI]
+        lot_sekarang = max(MIN_LOT, price * 0.00001)
         modal_sekarang = calc_modal(lot_sekarang)
 
-        status_text = "PAUSE" if is_paused else "JALAN"
+        status_text = "JALAN" if not is_paused else "PAUSE"
+        status_warna = "STATUS JALAN" if not is_paused else "STATUS PAUSE"
 
-        # [AMBIL LOT DARI DB = LOT AWAL BUY]
-        posisi_list = [{"buy": p, "tp": d['tp'], "lot": d['lot']} for p,d in sorted(positions.items())]
+        # [FORMAT KAYA GAMBAR PAKE MONOSPACE]
+        posisi_text = ""
+        if positions:
+            for p,d in sorted(positions.items()):
+                posisi_text += f"BUY ${p:.2f} -> TP ${d['tp']:.2f}\nLOT AWAL: ${d['lot']:.2f}\n\n"
+        else:
+            posisi_text = "Tidak ada posisi"
 
-        data_gambar = {
-            "status": status_text, "harga": price, "saldo": balance, "grid": grid_aktif,
-            "lot": lot_sekarang, "modal": modal_sekarang, "fee": FEE_BINANCE*100,
-            "jml_posisi": len(positions), "sell": stats['total_sell'], "profit": float(stats['total_profit']),
-            "posisi_list": posisi_list
-        }
-        
-        gambar = buat_gambar_status(data_gambar)
-        await context.bot.send_photo(chat_id=update.message.chat_id, photo=InputFile(gambar, filename="status.png"), 
-                                     caption=f"*{PAIR} STATUS*", parse_mode="Markdown", reply_markup=keyboard())
+        msg = f"""`{status_warna}
 
+Harga: ${price:.2f}
+
+Saldo: ${balance:.4f}
+GRID: ${grid_aktif:.2f} | LOT: ${lot_sekarang:.2f}
+Butuh: ${modal_sekarang:.2f} | Fee: {FEE_BINANCE*100:.3f}%
+Posisi: {len(positions)} | Sell: {stats['total_sell']} | Profit: ${float(stats['total_profit']):.2f}
+
+DAFTAR POSISI:
+{posisi_text}`"""
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard())
     except Exception as e: await update.message.reply_text(f"ERROR: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
