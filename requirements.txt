@@ -1,4 +1,3 @@
 python-telegram-bot==20.7
-python-binance
-supabase
-python-dotenv
+python-binance==1.0.19
+supabase==1.2.1
