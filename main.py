@@ -37,6 +37,7 @@ LAST_ATR_UPDATE = 0
 PAUSE_BOT = False
 sent_notif_cache = set()
 BASE_GRID_FOR_SHIFT = MIN_GRID
+SUDAH_START = False # <-- KUNCI BARU
 
 def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
@@ -183,10 +184,14 @@ async def check_tp():
     except Exception as e: log(f"check_tp crash: {e}")
 
 async def start_mode():
+    global SUDAH_START # <-- PAKE KUNCI
+    if SUDAH_START: return # <-- KALAU UDAH START, LANGSUNG KELUAR
+    SUDAH_START = True # <-- KUNCI DIKUNCI
+    
     grid = await get_grid_atr(force=True); price = get_price()
     target_bawah = math.floor(price / grid) * grid
     target_atas = math.ceil(price / grid) * grid
-    await send_tele(f"🚀 *BOT v9.0.21 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
+    await send_tele(f"🚀 *BOT v9.0.22 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
 
     while len(supa_get_positions()) == 0:
         price = get_price()
@@ -250,12 +255,11 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("STATUS", status))
     
-    # JALANKAN main_loop DI THREAD BARU
     loop = asyncio.new_event_loop()
     threading.Thread(target=lambda: loop.run_until_complete(main_loop()), daemon=True).start()
     
-    log("BOT v9.0.21 START POLLING")
-    app.run_polling() # INI JANGAN DI AWAIT
+    log("BOT v9.0.22 START POLLING")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
