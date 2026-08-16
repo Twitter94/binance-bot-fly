@@ -257,7 +257,10 @@ def main():
     app = ApplicationBuilder().token(TELE_TOKEN).request(request).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("STATUS", status))
-    threading.Thread(target=run_trading_loop, daemon=True).start()
+    
+    # DAFTARKAN main_loop JADI JOB
+    app.post_init = lambda app: app.create_task(main_loop())
+    
     log("BOT v9.0.19 START POLLING")
     app.run_polling()
 
