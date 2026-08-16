@@ -11,11 +11,12 @@ import ta
 
 load_dotenv()
 
-# KUNCI ANTI DOUBLE PROSES
+# KUNCI ANTI DOUBLE - VERSI AMAN
 LOCK_FILE = "/tmp/bot.lock"
 if os.path.exists(LOCK_FILE):
-    print("BOT SUDAH JALAN DI PROSES LAIN. EXIT.")
-    sys.exit(0)
+    print("WARNING: BOT.LOCK KETEMU. MUNGKIN ADA PROSES LAIN. LANJUT SAJA.")
+# JANGAN EXIT. HAPUS AJA LOCK LAMA
+if os.path.exists(LOCK_FILE): os.remove(LOCK_FILE)
 with open(LOCK_FILE, "w") as f: f.write(str(os.getpid()))
 
 API_KEY = os.getenv("BINANCE_API_KEY")
@@ -187,3 +188,89 @@ async def check_tp():
                     else:
                         await send_tele(f"*SELL* `@{tp_price}` +`{profit:.4f}` | *AREA MASIH AKTIF. SKIP RE-ENTRY*")
                     return
+                except Exception as e: log(f"Sell gagal: {e}")
+    except Exception as e: log(f"check_tp crash: {e}")
+
+async def start_mode():
+    global SUDAH_START
+    if SUDAH_START: return
+    SUDAH_START = True
+    
+    grid = await get_grid_atr(force=True); price = get_price()
+    target_bawah = math.floor(price / grid) * grid
+    target_atas = math.ceil(price / grid) * grid
+    await send_tele(f"🚀 *BOT v9.0.24 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
+
+    while len(supa_get_positions()) == 0:
+        price = get_price()
+        if price == 0: await asyncio.sleep(5); continue
+        if price <= target_bawah: await place_buy(target_bawah); break
+        if price >= target_atas: await place_buy(target_atas); break
+        time.sleep(2)
+
+async def main_loop():
+    try:
+        if len(supa_get_positions()) == 0: await start_mode()
+    except Exception as e: log(f"start_mode crash: {e}")
+
+    while True:
+        try:
+            await get_grid_atr()
+            await check_tp()
+            price = get_price();
+            if price == 0: await asyncio.sleep(5); continue
+            grid = await get_grid_atr(); positions = supa_get_positions()
+
+            if positions:
+                last_buy_area = min([p['area'] for p in positions])
+                target_buy = last_buy_area - grid
+            else:
+                target_buy = get_area_grid(price, grid)
+
+            if price <= target_buy and await can_buy(target_buy):
+                await place_buy(target_buy)
+
+            await asyncio.sleep(3)
+        except Exception as e:
+            log("CRASH MAIN LOOP: " + traceback.format_exc())
+            await asyncio.sleep(10)
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        price = get_price(); grid = await get_grid_atr(); qty, fee, modal = await get_order_params(price)
+        positions = supa_get_positions(); saldo = get_balance()
+        status_txt = "PAUSE" if PAUSE_BOT else "JALAN"
+        total_profit = sum([BUFFER + (QTY_FIXED * p['grid']) for p in positions])
+
+        pos_text = "\n".join([f"`BUY {p['buy_price']}` -> TP `{p['buy_price']+grid}` AREA `{p['area']}`" for p in positions]) or "Tidak ada posisi"
+        msg = f"""*STATUS {status_txt}*
+*Harga:* `${price}`
+*Saldo:* `${saldo:.4f}`
+*GRID:* `${grid}(ATR)` | *LOT:* `{LOT_USDT} USDT`
+*Fee:* `{fee*100:.3f}%` | *Profit:* `{total_profit:.4f}`
+*Posisi:* `{len(positions)}`
+
+*DAFTAR POSISI:*
+{pos_text}"""
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Error status: {e}")
+
+def main():
+    global app
+    request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
+    app = ApplicationBuilder().token(TELE_TOKEN).request(request).build()
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("STATUS", status))
+    
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=lambda: loop.run_until_complete(main_loop()), daemon=True).start()
+    
+    log("BOT v9.0.24 START POLLING")
+    try:
+        app.run_polling()
+    finally:
+        if os.path.exists(LOCK_FILE): os.remove(LOCK_FILE)
+
+if __name__ == "__main__":
+    main()
