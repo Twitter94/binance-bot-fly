@@ -186,7 +186,7 @@ async def start_mode():
     grid = await get_grid_atr(force=True); price = get_price()
     target_bawah = math.floor(price / grid) * grid
     target_atas = math.ceil(price / grid) * grid
-    await send_tele(f"🚀 *BOT v9.0.20 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
+    await send_tele(f"🚀 *BOT v9.0.21 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
 
     while len(supa_get_positions()) == 0:
         price = get_price()
@@ -243,18 +243,19 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error status: {e}")
 
-async def main():
+def main():
     global app
     request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
     app = ApplicationBuilder().token(TELE_TOKEN).request(request).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("STATUS", status))
     
-    # JALANKAN main_loop DI BACKGROUND
-    asyncio.create_task(main_loop())
+    # JALANKAN main_loop DI THREAD BARU
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=lambda: loop.run_until_complete(main_loop()), daemon=True).start()
     
-    log("BOT v9.0.20 START POLLING")
-    await app.run_polling()
+    log("BOT v9.0.21 START POLLING")
+    app.run_polling() # INI JANGAN DI AWAIT
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
