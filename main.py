@@ -195,7 +195,7 @@ async def start_mode():
         if price >= target_atas: await place_buy(target_atas); break
         time.sleep(2)
 
-async def main_loop():
+async def main_loop(context: ContextTypes.DEFAULT_TYPE):
     try:
         if len(supa_get_positions()) == 0: await start_mode()
     except Exception as e: log(f"start_mode crash: {e}")
@@ -221,14 +221,6 @@ async def main_loop():
         except Exception as e:
             log("CRASH MAIN LOOP: " + traceback.format_exc())
             await asyncio.sleep(10)
-
-def run_trading_loop():
-    while True:
-        try:
-            asyncio.run(main_loop())
-        except Exception as e:
-            log("TRADING LOOP CRASH. RESTART 10s: " + str(e))
-            time.sleep(10)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -258,8 +250,8 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("STATUS", status))
     
-    # DAFTARKAN main_loop JADI JOB
-    app.post_init = lambda app: app.create_task(main_loop())
+    # DAFTARKAN main_loop JADI JOB YANG JALAN SETELAH BOT START
+    app.job_queue.run_once(main_loop, when=1)
     
     log("BOT v9.0.19 START POLLING")
     app.run_polling()
