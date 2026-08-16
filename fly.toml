@@ -4,7 +4,4 @@ primary_region = "sin"
 [build]
 
 [processes]
-  app = "python bot.py"
-
-[deploy]
-  release_command = ""
+  app = "python main.py"
