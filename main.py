@@ -2,7 +2,7 @@ import os, time, math, traceback, threading, asyncio
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from binance.client import Client
-from supabase import create_client, Client as SupaClient, ClientOptions # FIX SUPA
+from supabase import create_client, Client as SupaClient # FIX: HAPUS ClientOptions
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram.request import HTTPXRequest
@@ -31,7 +31,7 @@ BUFFER = 0.001
 SHIFT_THRESHOLD = 0.20
 
 binance = Client(API_KEY, API_SECRET, requests_params={'timeout': 30})
-supa: SupaClient = create_client(SUPA_URL, SUPA_KEY, options=ClientOptions(timeout=30)) # FIX
+supa: SupaClient = create_client(SUPA_URL, SUPA_KEY) # FIX
 app = None
 GRID_ATR_AKTIF = MIN_GRID
 LAST_ATR_UPDATE = 0
@@ -111,12 +111,14 @@ def get_balance(): return float(retry_api(binance.get_asset_balance, asset='USDT
 def supa_get_positions(): 
     try: return supa.table("positions").select("*").eq("pair", PAIR).execute().data
     except: return []
-def supa_upsert_position(pos): # [6]
-    try: supa.table("positions").upsert(pos, on_conflict="pair,area").execute()
-    except Exception as e: log(f"Supa upsert error: {e}")
+def supa_upsert_position(pos): # [6] + RETRY
+    for i in range(3):
+        try: supa.table("positions").upsert(pos, on_conflict="pair,area").execute(); return
+        except Exception as e: log(f"Supa upsert retry {i+1}/3 error: {e}"); time.sleep(2)
 def supa_delete_position(area): 
-    try: supa.table("positions").delete().eq("pair", PAIR).eq("area", area).execute()
-    except Exception as e: log(f"Supa delete error: {e}")
+    for i in range(3):
+        try: supa.table("positions").delete().eq("pair", PAIR).eq("area", area).execute(); return
+        except Exception as e: log(f"Supa delete retry {i+1}/3 error: {e}"); time.sleep(2)
 
 def retry_api(func, *args, retries=3): # [2.6]
     for i in range(retries):
@@ -177,7 +179,7 @@ async def start_mode(): # [11]
     grid = await get_grid_atr(force=True); price = get_price()
     target_bawah = math.floor(price / grid) * grid # [11] BUY RAPI
     target_atas = math.ceil(price / grid) * grid
-    await send_tele(f"🚀 *BOT v9.0.14 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
+    await send_tele(f"🚀 *BOT v9.0.15 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
 
     while len(supa_get_positions()) == 0:
         price = get_price()
@@ -239,7 +241,7 @@ def main():
     app = ApplicationBuilder().token(TELE_TOKEN).request(request).build()
     app.add_handler(CommandHandler("status", status))
     threading.Thread(target=run_trading_loop, daemon=True).start()
-    log("BOT v9.0.14 START POLLING")
+    log("BOT v9.0.15 START POLLING")
     app.run_polling()
 
 if __name__ == "__main__":
