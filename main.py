@@ -186,7 +186,7 @@ async def start_mode():
     grid = await get_grid_atr(force=True); price = get_price()
     target_bawah = math.floor(price / grid) * grid
     target_atas = math.ceil(price / grid) * grid
-    await send_tele(f"🚀 *BOT v9.0.19 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
+    await send_tele(f"🚀 *BOT v9.0.20 START*\n*Mode:* `Cari Grid`\n*Harga:* `{price}`\n*Target:* `{target_bawah}` atau `{target_atas}`")
 
     while len(supa_get_positions()) == 0:
         price = get_price()
@@ -195,7 +195,7 @@ async def start_mode():
         if price >= target_atas: await place_buy(target_atas); break
         time.sleep(2)
 
-async def main_loop(context: ContextTypes.DEFAULT_TYPE):
+async def main_loop():
     try:
         if len(supa_get_positions()) == 0: await start_mode()
     except Exception as e: log(f"start_mode crash: {e}")
@@ -243,18 +243,18 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error status: {e}")
 
-def main():
+async def main():
     global app
     request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
     app = ApplicationBuilder().token(TELE_TOKEN).request(request).build()
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("STATUS", status))
     
-    # DAFTARKAN main_loop JADI JOB YANG JALAN SETELAH BOT START
-    app.job_queue.run_once(main_loop, when=1)
+    # JALANKAN main_loop DI BACKGROUND
+    asyncio.create_task(main_loop())
     
-    log("BOT v9.0.19 START POLLING")
-    app.run_polling()
+    log("BOT v9.0.20 START POLLING")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
