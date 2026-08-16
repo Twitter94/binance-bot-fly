@@ -5,3 +5,6 @@ primary_region = "sin"
 
 [processes]
   app = "python main.py"
+
+[deploy]
+  restart_limit = 0 # biar keliatan errornya 1x aja, gak restart2
