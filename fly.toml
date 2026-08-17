@@ -6,5 +6,12 @@ primary_region = "sin"
 [processes]
   app = "python main.py"
 
-[deploy]
-  restart_limit = 0 # biar keliatan errornya 1x aja, gak restart2
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
