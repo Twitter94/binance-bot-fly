@@ -13,7 +13,7 @@ TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 BINANCE_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET = os.getenv("BINANCE_API_SECRET")
 PAIR = os.getenv("PAIR", "BTCUSDT")
-LOT = float(os.getenv("LOT", "5"))
+LOT = float(os.getenv("LOT", "5")) # LOT = USDT yg mau dibelanjakan
 SUPA_URL = os.getenv("SUPA_URL")
 SUPA_KEY = os.getenv("SUPA_KEY")
 
@@ -22,7 +22,6 @@ ATR_PERIOD = 14
 ATR_MULTIPLIER = 0.5
 MIN_GRID = 250
 MAX_GRID = 1000
-QTY_FIXED = 0.00001
 wib = pytz.timezone('Asia/Jakarta')
 
 binance = Client(BINANCE_KEY, BINANCE_SECRET)
@@ -42,10 +41,11 @@ def get_positions():
 def log_trade(type, price, profit, grid, area):
     supa.table("logs").insert({"pair": PAIR, "type": type, "price": price, "profit": profit, "grid": grid, "area": area, "time": datetime.now(wib).isoformat()}).execute()
 
-# ===== BINANCE HELPERS =====
-def get_price(): return float(binance.futures_ticker_price(symbol=PAIR)['price'])
+# ===== BINANCE HELPERS SPOT =====
+def get_price(): return float(binance.ticker_price(symbol=PAIR)['price'])
+
 def get_atr(): 
-    klines = binance.futures_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
+    klines = binance.klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
     highs = [float(k[2]) for k in klines]; lows = [float(k[3]) for k in klines]; closes = [float(k[4]) for k in klines]
     trs = [max(h-l, abs(h-closes[i-1]), abs(l-closes[i-1])) for i,(h,l) in enumerate(zip(highs[1:], lows[1:]))]
     return sum(trs)/ATR_PERIOD
@@ -57,20 +57,23 @@ def get_grid_atr():
 
 def get_lot_and_fee(price):
     try:
-        info = binance.futures_exchange_info()
-        symbol_info = next(s for s in info['symbols'] if s['symbol'] == PAIR)
-        lot_size = next(f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE')
-        min_notional = next(f for f in symbol_info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['notional']
-        fee = float(binance.futures_trade_fee(symbol=PAIR)[0]['makerCommission']) / 100
+        info = binance.get_symbol_info(PAIR)
+        lot_size = next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')
+        min_notional = float(next(f for f in info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
+        fee = 0.001 # Fee spot 0.1%
         
-        qty = QTY_FIXED
-        lot_needed = (float(min_notional) / price) / qty * qty # Satpam 1
-        lot_needed = math.ceil(lot_needed / lot_size['stepSize']) * lot_size['stepSize']
-        lot_needed = max(lot_needed, LOT)
+        usdt_to_spend = LOT # LOT = berapa USDT mau dibelanjakan
+        qty = usdt_to_spend / price # Hitung qty dari USDT
         
-        modal_potong = lot_needed + (lot_needed * fee * 2) + (lot_needed * 0.001) # Buffer 0.1%
-        return qty, lot_needed, fee
-    except: return QTY_FIXED, LOT, 0.001
+        # Paksa qty sesuai stepSize
+        step = float(lot_size['stepSize'])
+        qty = math.floor(qty / step) * step
+        qty = max(qty, float(lot_size['minQty']))
+        
+        return qty, usdt_to_spend, fee
+    except Exception as e: 
+        print(f"ERROR get_lot: {e}")
+        return 0.00001, LOT, 0.001
 
 def get_area(price, grid): return round(price / grid) * grid
 
@@ -78,7 +81,7 @@ async def send_telegram(msg):
     await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg)
 
 # ===== CORE LOGIC =====
-async def trading_loop(context): # TAMBAH context
+async def trading_loop(context):
     last_grid_update = 0
     while True:
         try:
@@ -101,49 +104,51 @@ async def trading_loop(context): # TAMBAH context
             if not positions or price <= last_buy_price - grid:
                 if area not in positions: # [2.2B] 1 AREA 1 POSISI
                     qty, lot, fee = get_lot_and_fee(price)
-                    # Cek saldo
-                    balance = float(binance.futures_account_balance(asset="USDT")[0]['balance'])
-                    if balance > lot * 1.1:
-                        # BUY LIMIT
-                        order = binance.futures_create_order(symbol=PAIR, side='BUY', type='LIMIT', timeInForce='GTC', quantity=qty, price=price)
+                    # Cek saldo SPOT
+                    balance = float(binance.get_asset_balance(asset="USDT")['free'])
+                    cost = qty * price
+                    if balance > cost * 1.001:
+                        # BUY LIMIT SPOT
+                        order = binance.create_order(symbol=PAIR, side='BUY', type='LIMIT', timeInForce='GTC', quantity=qty, price=str(price))
                         save_position(area, price, qty, lot, fee)
                         log_trade("BUY", price, 0, grid, area)
-                        await send_telegram(f"BUY @{price} | AREA: {area}")
+                        await send_telegram(f"BUY @{price} | QTY: {qty} | AREA: {area}")
                     else:
-                        await send_telegram(f"PAUSE: SALDO KURANG. Nunggu TP atau isi saldo")
+                        await send_telegram(f"PAUSE: SALDO USDT KURANG. Butuh: {cost:.2f} | Ada: {balance:.2f}")
 
             # [4] CEK TP: HARGA NAIK 1 GRID
             for area_pos, pos in list(positions.items()):
                 tp_price = pos['buy_price'] + grid
                 if price >= tp_price:
-                    # SELL
-                    order = binance.futures_create_order(symbol=PAIR, side='SELL', type='LIMIT', timeInForce='GTC', quantity=pos['qty'], price=tp_price)
+                    # SELL SPOT
+                    order = binance.create_order(symbol=PAIR, side='SELL', type='LIMIT', timeInForce='GTC', quantity=pos['qty'], price=str(tp_price))
                     profit = (tp_price - pos['buy_price']) * pos['qty']
                     delete_position(area_pos)
                     log_trade("SELL", tp_price, profit, grid, area_pos)
                     
                     # [4.3] RE-ENTRY BERSYARAT
                     if area_pos not in get_positions(): # Area kosong
-                        await send_telegram(f"SELL @{tp_price} +{profit:.2f} -> RE-ENTRY BUY @{tp_price}")
+                        await send_telegram(f"SELL @{tp_price} +{profit:.2f} USDT -> RE-ENTRY BUY @{tp_price}")
                         qty, lot, fee = get_lot_and_fee(tp_price)
-                        binance.futures_create_order(symbol=PAIR, side='BUY', type='LIMIT', timeInForce='GTC', quantity=qty, price=tp_price)
+                        binance.create_order(symbol=PAIR, side='BUY', type='LIMIT', timeInForce='GTC', quantity=qty, price=str(tp_price))
                         save_position(area_pos, tp_price, qty, lot, fee)
                     else: # Area masih aktif
-                        await send_telegram(f"SELL @{tp_price} +{profit:.2f} | AREA MASIH AKTIF. SKIP RE-ENTRY")
+                        await send_telegram(f"SELL @{tp_price} +{profit:.2f} USDT | AREA MASIH AKTIF. SKIP RE-ENTRY")
                         
-        except Exception as e: await send_telegram(f"ERROR: {e}")
+        except Exception as e: 
+            await send_telegram(f"ERROR: {e}")
         await asyncio.sleep(10)
 
 # ===== TELEGRAM HANDLER =====
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     keyboard = [[KeyboardButton("STATUS")]]
-    await u.message.reply_text("BOT INFINITE GRID v9.0.2 HIDUP 🚀", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    await u.message.reply_text("BOT INFINITE GRID SPOT v9.1.0 HIDUP 🚀", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 async def status(u: Update, c: ContextTypes.DEFAULT_TYPE):
     price = get_price(); grid = get_grid_atr(); positions = get_positions()
-    balance = float(binance.futures_account_balance(asset="USDT")[0]['balance'])
+    balance = float(binance.get_asset_balance(asset="USDT")['free'])
     qty, lot, fee = get_lot_and_fee(price)
-    msg = f"*STATUS JALAN*\nHarga: {price}\nSaldo: {balance:.2f} USDT\nGrid: {grid}(ATR)\nLOT: {lot:.2f}\nFee: {fee*100:.3f}%\nPosisi: {len(positions)}"
+    msg = f"*STATUS SPOT JALAN*\nHarga: {price}\nSaldo USDT: {balance:.2f}\nGrid: {grid}(ATR)\nLOT/Buy: {lot:.2f} USDT\nFee: {fee*100:.3f}%\nPosisi: {len(positions)}"
     await u.message.reply_text(msg, parse_mode='Markdown')
 
 app = ApplicationBuilder().token(TELE_TOKEN).build()
@@ -151,7 +156,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("status", status))
 
 def main():
-    app.job_queue.run_repeating(trading_loop, interval=10, first=5) # INI KUNCINYA
+    app.job_queue.run_repeating(trading_loop, interval=10, first=5)
     app.run_webhook(listen="0.0.0.0", port=8080, url_path=TELE_TOKEN, webhook_url=f"https://bahaya.fly.dev/{TELE_TOKEN}")
 
 if __name__ == "__main__": 
