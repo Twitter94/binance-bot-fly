@@ -25,6 +25,11 @@ wib = pytz.timezone('Asia/Jakarta')
 binance = Client(BINANCE_KEY, BINANCE_SECRET)
 supa: SupaClient = create_client(SUPA_URL, SUPA_KEY)
 
+# TAMBAH CACHE BIAR GAK OOM
+last_atr = 0
+last_atr_time = 0
+last_symbol_info = None
+
 def save_position(area, buy_price, qty, lot, fee):
     supa.table("positions").upsert({"pair": PAIR, "area": area, "buy_price": buy_price, "qty": qty, "lot": lot, "fee": fee}).execute()
 
@@ -38,15 +43,21 @@ def get_positions():
 def log_trade(type, price, profit, grid, area):
     supa.table("logs").insert({"pair": PAIR, "type": type, "price": price, "profit": profit, "grid": grid, "area": area, "time": datetime.now(wib).isoformat()}).execute()
 
-# ===== BINANCE HELPERS SPOT VERSI KOMPATIBEL =====
+# ===== BINANCE HELPERS SPOT VERSI HEMAT RAM =====
 def get_price(): 
     return float(binance.get_symbol_ticker(symbol=PAIR)['price'])
 
 def get_atr(): 
-    klines = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
-    highs = [float(k[2]) for k in klines]; lows = [float(k[3]) for k in klines]; closes = [float(k[4]) for k in klines]
-    trs = [max(h-l, abs(h-closes[i-1]), abs(l-closes[i-1])) for i,(h,l) in enumerate(zip(highs[1:], lows[1:]))]
-    return sum(trs)/ATR_PERIOD
+    global last_atr, last_atr_time
+    now = time.time()
+    # Cache ATR 5 menit sekali aja. Jangan tiap 10 detik
+    if now - last_atr_time > 300:
+        klines = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
+        highs = [float(k[2]) for k in klines]; lows = [float(k[3]) for k in klines]; closes = [float(k[4]) for k in klines]
+        trs = [max(h-l, abs(h-closes[i-1]), abs(l-closes[i-1])) for i,(h,l) in enumerate(zip(highs[1:], lows[1:]))]
+        last_atr = sum(trs)/ATR_PERIOD
+        last_atr_time = now
+    return last_atr
 
 def get_grid_atr():
     atr = get_atr()
@@ -54,10 +65,14 @@ def get_grid_atr():
     return max(MIN_GRID, min(MAX_GRID, grid))
 
 def get_lot_and_fee(price):
+    global last_symbol_info
     try:
-        info = binance.get_symbol_info(PAIR)
-        lot_size = next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')
-        min_notional = float(next(f for f in info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
+        # Cache symbol_info 1 jam sekali
+        if last_symbol_info is None:
+            last_symbol_info = binance.get_symbol_info(PAIR)
+        
+        lot_size = next(f for f in last_symbol_info['filters'] if f['filterType'] == 'LOT_SIZE')
+        min_notional = float(next(f for f in last_symbol_info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
         fee = 0.001
         
         usdt_to_spend = LOT
@@ -128,7 +143,7 @@ async def trading_loop(context):
 
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     keyboard = [[KeyboardButton("STATUS")]]
-    await u.message.reply_text("BOT INFINITE GRID SPOT v9.1.1 HIDUP 🚀", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    await u.message.reply_text("BOT INFINITE GRID SPOT v9.1.2 HIDUP 🚀", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 async def status(u: Update, c: ContextTypes.DEFAULT_TYPE):
     price = get_price(); grid = get_grid_atr(); positions = get_positions()
