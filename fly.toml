@@ -1,11 +1,14 @@
-app = "bahaya"
-primary_region = "sin"
-
-[build]
-
 [http_service]
   internal_port = 8080
   force_https = true
   auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
+
+[env]
+  PAIR = "BTCUSDT"
+  LOT = "5"
+  ATR_PERIOD = "14"
+  ATR_MULTIPLIER = "0.5"
+  MIN_GRID = "250"
+  MAX_GRID = "1000"
