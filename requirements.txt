@@ -1,6 +1,6 @@
 python-telegram-bot[webhooks]==20.7
 python-binance==1.0.19
-supabase==2.3.4
-aiohttp==3.9.1
-pandas==2.1.4
+supabase==1.0.3
+aiohttp==3.8.6
+pandas==2.0.3
 pytz==2023.3
