@@ -1,4 +1,6 @@
 import os, asyncio, time, math
+import nest_asyncio # TAMBAH 1
+nest_asyncio.apply() # TAMBAH 2
 from datetime import datetime
 import pytz
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
@@ -150,9 +152,9 @@ app = ApplicationBuilder().token(TELE_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("status", status))
 
-async def main(): # TAMBAH async
+def main(): # BALIKIN JADI def BIASA
     asyncio.create_task(trading_loop())
-    await app.run_webhook(listen="0.0.0.0", port=8080, url_path=TELE_TOKEN, webhook_url=f"https://bahaya.fly.dev/{TELE_TOKEN}")
+    app.run_webhook(listen="0.0.0.0", port=8080, url_path=TELE_TOKEN, webhook_url=f"https://bahaya.fly.dev/{TELE_TOKEN}")
 
 if __name__ == "__main__": 
-    asyncio.run(main()) # TAMBAH INI
+    main() # BALIKIN JADI main() BIASA - TAMBAH 3
