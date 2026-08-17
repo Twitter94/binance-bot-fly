@@ -1,164 +1,214 @@
-import os, asyncio, time, math
+import os, time, asyncio, math
 from datetime import datetime
-import pytz
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from supabase import create_client, Client as SupaClient
+from supabase import create_client
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+import pytz
 
+# [8] ENV WAJIB
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
+PAIR = os.getenv("PAIR", "BTCUSDT")
+LOT_ENV = float(os.getenv("LOT", 5))
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
-BINANCE_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET = os.getenv("BINANCE_API_SECRET")
-PAIR = os.getenv("PAIR", "BTCUSDT")
-LOT = float(os.getenv("LOT", "5"))
 SUPA_URL = os.getenv("SUPA_URL")
 SUPA_KEY = os.getenv("SUPA_KEY")
 
+# [1] SETTING ATR & GRID
 ATR_PERIOD = 14
+ATR_TIMEFRAME = Client.KLINE_INTERVAL_1HOUR
 ATR_MULTIPLIER = 0.5
 MIN_GRID = 250
 MAX_GRID = 1000
-wib = pytz.timezone('Asia/Jakarta')
+QTY_FIXED = 0.00001 # [3] SATPAM 2
+BUFFER = 0.0005 # 0.05% buffer
 
-binance = Client(BINANCE_KEY, BINANCE_SECRET)
-supa: SupaClient = create_client(SUPA_URL, SUPA_KEY)
+wib = pytz.timezone("Asia/Jakarta")
+binance = Client(API_KEY, API_SECRET)
+supa = create_client(SUPA_URL, SUPA_KEY)
 
-# TAMBAH CACHE BIAR GAK OOM
-last_atr = 0
-last_atr_time = 0
-last_symbol_info = None
+# Global
+last_grid = 0
+last_atr_check_price = 0
+last_grid_update_day = 0
+paused = False
+symbol_info_cache = None
+
+async def send_telegram(msg):
+    try: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown")
+    except: pass
+
+def get_area(price, grid): # [2.2.B] Kelipatan GRID
+    return math.floor(price / grid) * grid
+
+def get_positions(): # [6] AMBIL DARI SUPABASE
+    res = supa.table("positions").select("*").eq("pair", PAIR).execute()
+    return res.data
 
 def save_position(area, buy_price, qty, lot, fee):
-    supa.table("positions").upsert({"pair": PAIR, "area": area, "buy_price": buy_price, "qty": qty, "lot": lot, "fee": fee}).execute()
+    data = {"pair": PAIR, "area": area, "buy_price": buy_price, "qty": qty, "lot": lot, "fee": fee}
+    supa.table("positions").upsert(data, on_conflict="pair,area").execute()
 
 def delete_position(area):
     supa.table("positions").delete().eq("pair", PAIR).eq("area", area).execute()
 
-def get_positions():
-    res = supa.table("positions").select("*").eq("pair", PAIR).execute()
-    return {p['area']: p for p in res.data}
+def get_atr(): # [1] HITUNG ATR
+    klines = binance.get_klines(symbol=PAIR, interval=ATR_TIMEFRAME, limit=ATR_PERIOD+1)
+    highs = [float(k[2]) for k in klines]; lows = [float(k[3]) for k in klines]; closes = [float(k[4]) for k in klines]
+    trs = [max(h-l, abs(h-closes[i-1]), abs(l-closes[i-1])) for i,(h,l) in enumerate(zip(highs[1:], lows[1:]))]
+    atr = sum(trs)/ATR_PERIOD
+    grid = max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
+    return atr, grid
 
-def log_trade(type, price, profit, grid, area):
-    supa.table("logs").insert({"pair": PAIR, "type": type, "price": price, "profit": profit, "grid": grid, "area": area, "time": datetime.now(wib).isoformat()}).execute()
+def get_symbol_info(): # Cache [3]
+    global symbol_info_cache
+    if symbol_info_cache is None: symbol_info_cache = binance.get_symbol_info(PAIR)
+    return symbol_info_cache
 
-# ===== BINANCE HELPERS SPOT VERSI HEMAT RAM =====
-def get_price(): 
-    return float(binance.get_symbol_ticker(symbol=PAIR)['price'])
+def get_lot_and_fee(price): # [3] 2 SATPAM BINANCE
+    info = get_symbol_info()
+    lot_filter = next(f for f in info['filters'] if f['filterType'] == 'MIN_NOTIONAL')
+    min_notional = float(lot_filter['minNotional']) # SATPAM 1: $5
 
-def get_atr(): 
-    global last_atr, last_atr_time
-    now = time.time()
-    # Cache ATR 5 menit sekali aja. Jangan tiap 10 detik
-    if now - last_atr_time > 300:
-        klines = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
-        highs = [float(k[2]) for k in klines]; lows = [float(k[3]) for k in klines]; closes = [float(k[4]) for k in klines]
-        trs = [max(h-l, abs(h-closes[i-1]), abs(l-closes[i-1])) for i,(h,l) in enumerate(zip(highs[1:], lows[1:]))]
-        last_atr = sum(trs)/ATR_PERIOD
-        last_atr_time = now
-    return last_atr
+    lot = LOT_ENV
+    notional = price * QTY_FIXED
+    if notional < min_notional: # Jika 0.00001 * harga < 5
+        lot = math.ceil(min_notional / price / QTY_FIXED) * QTY_FIXED # Naikin lot
 
-def get_grid_atr():
-    atr = get_atr()
-    grid = round(atr * ATR_MULTIPLIER)
-    return max(MIN_GRID, min(MAX_GRID, grid))
+    fee = float(binance.get_trade_fee(symbol=PAIR)['tradeFee'][0]['maker']) / 100 # Fee rill
+    return lot, fee
 
-def get_lot_and_fee(price):
-    global last_symbol_info
-    try:
-        # Cache symbol_info 1 jam sekali
-        if last_symbol_info is None:
-            last_symbol_info = binance.get_symbol_info(PAIR)
-        
-        lot_size = next(f for f in last_symbol_info['filters'] if f['filterType'] == 'LOT_SIZE')
-        min_notional = float(next(f for f in last_symbol_info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
-        fee = 0.001
-        
-        usdt_to_spend = LOT
-        qty = usdt_to_spend / price
-        step = float(lot_size['stepSize'])
-        qty = math.floor(qty / step) * step
-        qty = max(qty, float(lot_size['minQty']))
-        return qty, usdt_to_spend, fee
-    except Exception as e: 
-        print(f"ERROR get_lot: {e}")
-        return 0.00001, LOT, 0.001
+def retry_api(func, *args, **kwargs): # [2.6] RETRY 3X
+    for i in range(3):
+        try: return func(*args, **kwargs)
+        except BinanceAPIException as e:
+            time.sleep(2)
+            if i==2: raise e
+    return None
 
-def get_area(price, grid): return round(price / grid) * grid
+def get_price(): return float(retry_api(binance.get_symbol_ticker, symbol=PAIR)['price'])
+def get_balance(asset): return float(retry_api(binance.get_asset_balance, asset=asset)['free'])
 
-async def send_telegram(msg):
-    await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg)
+async def do_buy(price, area, grid):
+    lot, fee = get_lot_and_fee(price) # [2.3] Ambil rill
+    qty = QTY_FIXED
+    usdt_need = lot + (lot * fee * 2) + (lot * BUFFER) # [3] MODAL_POTONG
 
-async def trading_loop(context):
-    last_grid_update = 0
+    if get_balance("USDT") < usdt_need:
+        global paused
+        paused = True
+        await send_telegram(f"PAUSE: SALDO KURANG. Butuh `{usdt_need:.2f}` USDT")
+        return False
+
+    order = retry_api(binance.order_market_buy, symbol=PAIR, quantity=qty)
+    save_position(area, price, qty, lot, fee) # [6] SIMPAN SUPABASE
+    await send_telegram(f"BUY @`{price:.2f}` | AREA: `{area:.2f}`") # [7.3]
+    return True
+
+async def do_sell(pos, price, grid):
+    lot, fee = get_lot_and_fee(price) # Ambil rill
+    order = retry_api(binance.order_market_sell, symbol=PAIR, quantity=pos['qty'])
+    profit = BUFFER + (pos['qty'] * grid) # [5] RUMUS PROFIT
+    delete_position(pos['area']) # [6] HAPUS SUPABASE
+
+    # [4.3] RE-ENTRY BERSYARAT
+    re_area = get_area(price, grid)
+    positions = get_positions()
+    area_aktif = any(p['area'] == re_area for p in positions)
+
+    if not area_aktif: # 3A: KOSONG
+        await do_buy(price, re_area, grid)
+        await send_telegram(f"SELL @`{price:.2f}` +`{profit:.2f}` -> RE-ENTRY BUY @`{re_area:.2f}`")
+    else: # 3B: MASIH AKTIF
+        await send_telegram(f"SELL @`{price:.2f}` +`{profit:.2f}` | AREA MASIH AKTIF. SKIP RE-ENTRY")
+
+async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
+    global last_grid, last_atr_check_price, last_grid_update_day, paused
+    first_buy_base_price = 0 # [11] PATOKAN HARGA START
+    waiting_first_buy = True
+
     while True:
         try:
             now = datetime.now(wib)
             price = get_price()
             positions = get_positions()
-            
-            if now.hour == 0 and now.minute == 0 and last_grid_update!= now.day:
-                grid = get_grid_atr()
-                last_grid_update = now.day
-                await send_telegram(f"ATR SHIFT 00:00 | GRID BARU: {grid}")
-            else:
-                grid = get_grid_atr()
 
+            update_grid = False
+            reason = ""
+
+            # [1] SATPAM 1: 00:00 WIB
+            if now.hour == 0 and now.minute == 0 and last_grid_update_day!= now.day:
+                update_grid = True; reason = "ATR SHIFT 00:00"; last_grid_update_day = now.day
+
+            # [1] SATPAM 2: 20%
+            if last_grid > 0 and last_atr_check_price > 0:
+                change = abs(price - last_atr_check_price) / last_atr_check_price
+                if change >= 0.20:
+                    update_grid = True; reason = f"ATR SHIFT 20%"
+
+            if update_grid or last_grid == 0: # [11] JIKA BARU START ATAU GANTI GRID
+                atr, new_grid = get_atr()
+                last_grid = new_grid
+                last_atr_check_price = price
+                if reason: await send_telegram(f"{reason} | GRID BARU: `{last_grid}`")
+                if first_buy_base_price == 0: first_buy_base_price = price # CATAT HARGA START
+
+            grid = last_grid
             area = get_area(price, grid)
-            last_buy_price = max(positions.values(), key=lambda x: x['buy_price'])['buy_price'] if positions else price
 
-            if not positions or price <= last_buy_price - grid:
-                if area not in positions:
-                    qty, lot, fee = get_lot_and_fee(price)
-                    balance = float(binance.get_asset_balance(asset="USDT")['free'])
-                    cost = qty * price
-                    if balance > cost * 1.001:
-                        order = binance.create_order(symbol=PAIR, side='BUY', type='LIMIT', timeInForce='GTC', quantity=qty, price=str(price))
-                        save_position(area, price, qty, lot, fee)
-                        log_trade("BUY", price, 0, grid, area)
-                        await send_telegram(f"BUY @{price} | QTY: {qty} | AREA: {area}")
-                    else:
-                        await send_telegram(f"PAUSE: SALDO USDT KURANG. Butuh: {cost:.2f} | Ada: {balance:.2f}")
-
-            for area_pos, pos in list(positions.items()):
+            # [4.4] CEK TP JIKA BOT OFF/ON
+            for pos in positions[:]: # pakai [:] biar aman pas delete
                 tp_price = pos['buy_price'] + grid
                 if price >= tp_price:
-                    order = binance.create_order(symbol=PAIR, side='SELL', type='LIMIT', timeInForce='GTC', quantity=pos['qty'], price=str(tp_price))
-                    profit = (tp_price - pos['buy_price']) * pos['qty']
-                    delete_position(area_pos)
-                    log_trade("SELL", tp_price, profit, grid, area_pos)
-                    
-                    if area_pos not in get_positions():
-                        await send_telegram(f"SELL @{tp_price} +{profit:.2f} USDT -> RE-ENTRY BUY @{tp_price}")
-                        qty, lot, fee = get_lot_and_fee(tp_price)
-                        binance.create_order(symbol=PAIR, side='BUY', type='LIMIT', timeInForce='GTC', quantity=qty, price=str(tp_price))
-                        save_position(area_pos, tp_price, qty, lot, fee)
-                    else:
-                        await send_telegram(f"SELL @{tp_price} +{profit:.2f} USDT | AREA MASIH AKTIF. SKIP RE-ENTRY")
-                        
-        except Exception as e: 
-            await send_telegram(f"ERROR: {e}")
-        await asyncio.sleep(10)
+                    await do_sell(pos, tp_price, grid)
+                    positions = get_positions() # refresh setelah sell
 
-async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[KeyboardButton("STATUS")]]
-    await u.message.reply_text("BOT INFINITE GRID SPOT v9.1.2 HIDUP 🚀", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+            # [2] ATURAN BUY + [11] START FLEKSIBEL
+            if not paused and grid > 0:
+                area_aktif = any(p['area'] == area for p in positions)
 
-async def status(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    price = get_price(); grid = get_grid_atr(); positions = get_positions()
-    balance = float(binance.get_asset_balance(asset="USDT")['free'])
-    qty, lot, fee = get_lot_and_fee(price)
-    msg = f"*STATUS SPOT JALAN*\nHarga: {price}\nSaldo USDT: {balance:.2f}\nGrid: {grid}(ATR)\nLOT/Buy: {lot:.2f} USDT\nFee: {fee*100:.3f}%\nPosisi: {len(positions)}"
-    await u.message.reply_text(msg, parse_mode='Markdown')
+                # [11] FASE 1: BELUM PERNAH BUY SAMA SEKALI
+                if waiting_first_buy and len(positions) == 0:
+                    buy_up = first_buy_base_price + grid # naik 1 grid dari harga start
+                    buy_down = first_buy_base_price - grid # turun 1 grid dari harga start
+
+                    if price >= buy_up or price <= buy_down: # NUNGGU LARI 1 GRID DULU
+                        if await do_buy(price, area, grid):
+                            waiting_first_buy = False # SETELAH INI MASUK MODE KAKU
+
+                # [2] FASE 2: SETELAH BUY PERTAMA = MODE KAKU NORMAL
+                elif not waiting_first_buy:
+                    buy_trigger_price = min([p['buy_price'] for p in positions]) - grid # [2.1] TURUN 1 GRID
+                    if price <= buy_trigger_price and not area_aktif: # [2.2.A][2.2.B]
+                        await do_buy(price, area, grid)
+
+            # [4] UNPAUSE JIKA SALDO ADA
+            if paused and get_balance("USDT") > LOT_ENV * 1.1:
+                paused = False; await send_telegram("LANJUT: SALDO SUDAH DIISI")
+
+        except Exception as e: await send_telegram(f"ERROR: {e}")
+        await asyncio.sleep(30) # Hemat RAM
+
+# [7] TELEGRAM
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price = get_price(); usdt = get_balance("USDT")
+    positions = get_positions()
+    profit = sum([BUFFER + (p['qty'] * last_grid) for p in positions])
+    status_txt = "JALAN" if not paused else "PAUSE"
+    txt = f"*{status_txt}* | Harga: `{price:.2f}`\nSaldo: `{usdt:.2f}` USDT\nGrid: `{last_grid}` | LOT: `{LOT_ENV}` | Profit: `{profit:.2f}`\nPosisi: `{len(positions)}`"
+    keyboard = [[InlineKeyboardButton("STATUS", callback_data='status')]]
+    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await status(update, context)
 
 app = ApplicationBuilder().token(TELE_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("status", status))
+app.add_handler(CommandHandler("start", status))
+app.add_handler(CallbackQueryHandler(button))
+app.job_queue.run_repeating(trading_loop, interval=30, first=5)
 
-def main():
-    app.job_queue.run_repeating(trading_loop, interval=10, first=5)
-    app.run_webhook(listen="0.0.0.0", port=8080, url_path=TELE_TOKEN, webhook_url=f"https://bahaya.fly.dev/{TELE_TOKEN}")
-
-if __name__ == "__main__": 
-    main()
+if __name__ == "__main__":
+    app.run_polling()
