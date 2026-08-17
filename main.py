@@ -1,4 +1,4 @@
-import os, asyncio, time, math
+import os, asyncio, time, math, sys # TAMBAH sys
 from datetime import datetime
 import pytz
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
@@ -17,6 +17,11 @@ LOT = float(os.getenv("LOT", "5"))
 SUPA_URL = os.getenv("SUPA_URL")
 SUPA_KEY = os.getenv("SUPA_KEY")
 
+# TAMBAH INI 4 BARIS - CEK ENV BIAR GAK CRASH
+if not all([TELE_TOKEN, TELE_CHAT_ID, BINANCE_KEY, BINANCE_SECRET, SUPA_URL, SUPA_KEY]):
+    print("FATAL: ENV KURANG. CEK fly secrets")
+    sys.exit(1)
+
 # ===== SETTING ATR & GRID =====
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 0.5
@@ -27,6 +32,8 @@ wib = pytz.timezone('Asia/Jakarta')
 
 binance = Client(BINANCE_KEY, BINANCE_SECRET)
 supa: SupaClient = create_client(SUPA_URL, SUPA_KEY)
+
+app = None # TAMBAH INI 1 BARIS - BIKIN GLOBAL DULU
 
 # ===== SUPABASE HELPERS =====
 def save_position(area, buy_price, qty, lot, fee):
@@ -44,7 +51,7 @@ def log_trade(type, price, profit, grid, area):
 
 # ===== BINANCE HELPERS =====
 def get_price(): return float(binance.futures_ticker_price(symbol=PAIR)['price'])
-def get_atr(): 
+def get_atr():
     klines = binance.futures_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
     highs = [float(k[2]) for k in klines]; lows = [float(k[3]) for k in klines]; closes = [float(k[4]) for k in klines]
     trs = [max(h-l, abs(h-closes[i-1]), abs(l-closes[i-1])) for i,(h,l) in enumerate(zip(highs[1:], lows[1:]))]
@@ -62,12 +69,12 @@ def get_lot_and_fee(price):
         lot_size = next(f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE')
         min_notional = next(f for f in symbol_info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['notional']
         fee = float(binance.futures_trade_fee(symbol=PAIR)[0]['makerCommission']) / 100
-        
+
         qty = QTY_FIXED
         lot_needed = (float(min_notional) / price) / qty * qty # Satpam 1
         lot_needed = math.ceil(lot_needed / lot_size['stepSize']) * lot_size['stepSize']
         lot_needed = max(lot_needed, LOT)
-        
+
         modal_potong = lot_needed + (lot_needed * fee * 2) + (lot_needed * 0.001) # Buffer 0.1%
         return qty, lot_needed, fee
     except: return QTY_FIXED, LOT, 0.001
@@ -75,17 +82,19 @@ def get_lot_and_fee(price):
 def get_area(price, grid): return round(price / grid) * grid
 
 async def send_telegram(msg):
-    await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg)
+    if app: # TAMBAH INI 1 BARIS - CEK APP UDAH ADA
+        await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg)
 
 # ===== CORE LOGIC =====
 async def trading_loop():
     last_grid_update = 0
+    await asyncio.sleep(5) # TAMBAH INI 1 BARIS - TUNGGU APP JALAN DULU
     while True:
         try:
             now = datetime.now(wib)
             price = get_price()
             positions = get_positions()
-            
+
             # UPDATE GRID JAM 00:00
             if now.hour == 0 and now.minute == 0 and last_grid_update!= now.day:
                 grid = get_grid_atr()
@@ -121,7 +130,7 @@ async def trading_loop():
                     profit = (tp_price - pos['buy_price']) * pos['qty']
                     delete_position(area_pos)
                     log_trade("SELL", tp_price, profit, grid, area_pos)
-                    
+
                     # [4.3] RE-ENTRY BERSYARAT
                     if area_pos not in get_positions(): # Area kosong
                         await send_telegram(f"SELL @{tp_price} +{profit:.2f} -> RE-ENTRY BUY @{tp_price}")
@@ -130,8 +139,9 @@ async def trading_loop():
                         save_position(area_pos, tp_price, qty, lot, fee)
                     else: # Area masih aktif
                         await send_telegram(f"SELL @{tp_price} +{profit:.2f} | AREA MASIH AKTIF. SKIP RE-ENTRY")
-                        
-        except Exception as e: await send_telegram(f"ERROR: {e}")
+
+        except Exception as e:
+            if app: await send_telegram(f"ERROR: {e}") # TAMBAH IF APP
         await asyncio.sleep(10)
 
 # ===== TELEGRAM HANDLER =====
@@ -146,12 +156,12 @@ async def status(u: Update, c: ContextTypes.DEFAULT_TYPE):
     msg = f"*STATUS JALAN*\nHarga: {price}\nSaldo: {balance:.2f} USDT\nGrid: {grid}(ATR)\nLOT: {lot:.2f}\nFee: {fee*100:.3f}%\nPosisi: {len(positions)}"
     await u.message.reply_text(msg, parse_mode='Markdown')
 
-app = ApplicationBuilder().token(TELE_TOKEN).build()
+app = ApplicationBuilder().token(TELE_TOKEN).build() # INI TETAP
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("status", status))
 
 def main():
-    asyncio.create_task(trading_loop())
+    asyncio.create_task(trading_loop()) # INI TETAP
     app.run_webhook(listen="0.0.0.0", port=8080, url_path=TELE_TOKEN, webhook_url=f"https://bahaya.fly.dev/{TELE_TOKEN}")
 
 if __name__ == "__main__": main()
