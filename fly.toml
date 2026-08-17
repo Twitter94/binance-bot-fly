@@ -3,15 +3,9 @@ primary_region = "sin"
 
 [build]
 
-[processes]
-  app = "python main.py"
-
-[[services]]
+[http_service]
   internal_port = 8080
-  protocol = "tcp"
+  force_https = true
   auto_stop_machines = false
   auto_start_machines = true
-
-  [[services.ports]]
-    port = 443
-    handlers = ["tls", "http"]
+  min_machines_running = 1
