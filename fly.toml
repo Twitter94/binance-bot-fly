@@ -1,3 +1,6 @@
+app = 'bahaya'
+primary_region = 'sin'
+
 [http_service]
   internal_port = 8080
   force_https = true
@@ -8,7 +11,3 @@
 [env]
   PAIR = "BTCUSDT"
   LOT = "5"
-  ATR_PERIOD = "14"
-  ATR_MULTIPLIER = "0.5"
-  MIN_GRID = "250"
-  MAX_GRID = "1000"
