@@ -1,10 +1,8 @@
 import os, asyncio, time, math
-import nest_asyncio # TAMBAH 1
-nest_asyncio.apply() # TAMBAH 2
 from datetime import datetime
 import pytz
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from supabase import create_client, Client as SupaClient
@@ -80,7 +78,7 @@ async def send_telegram(msg):
     await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg)
 
 # ===== CORE LOGIC =====
-async def trading_loop():
+async def trading_loop(context): # TAMBAH context
     last_grid_update = 0
     while True:
         try:
@@ -152,9 +150,9 @@ app = ApplicationBuilder().token(TELE_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("status", status))
 
-def main(): # BALIKIN JADI def BIASA
-    asyncio.create_task(trading_loop())
+def main():
+    app.job_queue.run_repeating(trading_loop, interval=10, first=5) # INI KUNCINYA
     app.run_webhook(listen="0.0.0.0", port=8080, url_path=TELE_TOKEN, webhook_url=f"https://bahaya.fly.dev/{TELE_TOKEN}")
 
 if __name__ == "__main__": 
-    main() # BALIKIN JADI main() BIASA - TAMBAH 3
+    main()
