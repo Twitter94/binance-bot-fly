@@ -1,4 +1,4 @@
-import os, time, asyncio, math, httpx, gc, logging
+import os, time, asyncio, math, httpx, gc, logging, signal
 from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -6,9 +6,8 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import pytz
 
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("binance").setLevel(logging.WARNING)
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
@@ -46,7 +45,7 @@ async def send_telegram(msg):
     else: last_error_cache.clear()
     try:
         if app: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown")
-    except: pass
+    except Exception as e: logging.error(f"Send tele error: {e}")
 
 def get_area(price, grid):
     if grid <= 0: grid = MIN_GRID
@@ -231,107 +230,116 @@ async def sell_all_instant(price, grid, reason="ATR-NAIK"):
 async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
     global last_grid, last_atr_check_price, last_grid_update_day, paused
     global first_buy_base_price, waiting_first_buy, first_run
+    try:
+        price = get_price()
+        if price <= 0: return
 
-    price = get_price()
-    if price <= 0:
-        gc.collect()
-        return
-
-    positions = get_positions()
-    if first_run:
-        await check_ghost_order()
-        first_run = False
-    if len(positions) > 0: waiting_first_buy = False
-
-    if need_recovery:
-        await send_telegram("MENJALANKAN AUTO RECOVERY SEKARANG...")
-        await sync_db_with_binance()
-        await asyncio.sleep(5)
         positions = get_positions()
+        if first_run:
+            await check_ghost_order()
+            first_run = False
+        if len(positions) > 0: waiting_first_buy = False
 
-    _, atr_sekarang = get_atr()
-    atr_shift_dir = None; reason = ""
-    now = datetime.now(wib)
+        if need_recovery:
+            await send_telegram("MENJALANKAN AUTO RECOVERY SEKARANG...")
+            await sync_db_with_binance()
+            await asyncio.sleep(5)
+            positions = get_positions()
 
-    if last_grid > 0 and last_atr_check_price > 0:
-        change = (price - last_atr_check_price) / last_atr_check_price
-        if change >= ATR_SHIFT_PCT: atr_shift_dir = "NAIK"; reason = "ATR SHIFT 20% NAIK"
-        elif change <= -ATR_SHIFT_PCT: atr_shift_dir = "TURUN"; reason = "ATR SHIFT 20% TURUN"
+        _, atr_sekarang = get_atr()
+        atr_shift_dir = None; reason = ""
+        now = datetime.now(wib)
 
-    if now.hour == 0 and now.minute == 0 and last_grid_update_day!= now.day:
-        atr_shift_dir = "JAM_00"; reason = "ATR SHIFT 00:00"; last_grid_update_day = now.day
+        if last_grid > 0 and last_atr_check_price > 0:
+            change = (price - last_atr_check_price) / last_atr_check_price
+            if change >= ATR_SHIFT_PCT: atr_shift_dir = "NAIK"; reason = "ATR SHIFT 20% NAIK"
+            elif change <= -ATR_SHIFT_PCT: atr_shift_dir = "TURUN"; reason = "ATR SHIFT 20% TURUN"
 
-    if atr_shift_dir:
-        old_grid = last_grid
-        new_grid = atr_sekarang
-        if atr_shift_dir == "NAIK":
-            await sell_all_instant(price, old_grid, "NAIK")
-            positions = []; waiting_first_buy = True; first_buy_base_price = price
-        elif atr_shift_dir == "TURUN":
-            await send_telegram(f"ATR SHIFT TURUN 20%! Grid: `{old_grid}` -> `{new_grid}`. UPDATE TP SEMUA POSISI")
-            update_all_positions_grid(new_grid, old_grid)
-        elif atr_shift_dir == "JAM_00":
-            await send_telegram(f"{reason} | GRID BARU: `{new_grid}`")
-        last_grid = new_grid
-        last_atr_check_price = price
-    elif last_grid!= atr_sekarang and last_grid > 0:
-        await send_telegram(f"ATR UPDATE: `{last_grid}` -> `{atr_sekarang}`")
-        update_all_positions_grid(atr_sekarang, last_grid)
-        last_grid = atr_sekarang
+        if now.hour == 0 and now.minute == 0 and last_grid_update_day!= now.day:
+            atr_shift_dir = "JAM_00"; reason = "ATR SHIFT 00:00"; last_grid_update_day = now.day
 
-    if last_grid == 0:
-        last_grid = atr_sekarang
-        last_atr_check_price = price
-        if first_buy_base_price == 0: first_buy_base_price = price
+        if atr_shift_dir:
+            old_grid = last_grid
+            new_grid = atr_sekarang
+            if atr_shift_dir == "NAIK":
+                await sell_all_instant(price, old_grid, "NAIK")
+                positions = []; waiting_first_buy = True; first_buy_base_price = price
+            elif atr_shift_dir == "TURUN":
+                await send_telegram(f"ATR SHIFT TURUN 20%! Grid: `{old_grid}` -> `{new_grid}`. UPDATE TP SEMUA POSISI")
+                update_all_positions_grid(new_grid, old_grid)
+            elif atr_shift_dir == "JAM_00":
+                await send_telegram(f"{reason} | GRID BARU: `{new_grid}`")
+            last_grid = new_grid
+            last_atr_check_price = price
+        elif last_grid!= atr_sekarang and last_grid > 0:
+            await send_telegram(f"ATR UPDATE: `{last_grid}` -> `{atr_sekarang}`")
+            update_all_positions_grid(atr_sekarang, last_grid)
+            last_grid = atr_sekarang
 
-    grid = last_grid
-    area = get_area(price, grid)
-    area_aktif = any(p['area'] == area for p in positions)
+        if last_grid == 0:
+            last_grid = atr_sekarang
+            last_atr_check_price = price
+            if first_buy_base_price == 0: first_buy_base_price = price
 
-    aksi_dilakukan = False
-    for pos in positions[:]:
-        if price >= pos['buy_price'] + grid:
-            await do_sell(pos, pos['buy_price'] + grid, grid)
-            aksi_dilakukan = True
+        grid = last_grid
+        area = get_area(price, grid)
+        area_aktif = any(p['area'] == area for p in positions)
 
-    if not aksi_dilakukan and not paused and grid > 0:
-        if waiting_first_buy and len(positions) == 0:
-            buy_up = first_buy_base_price + grid
-            buy_down = first_buy_base_price - grid
-            if (price >= buy_up or price <= buy_down) and not area_aktif:
-                if await do_buy(price, area, grid): waiting_first_buy = False
-        elif not waiting_first_buy:
-            buy_trigger = min([p['buy_price'] for p in positions]) - grid
-            if price <= buy_trigger and not area_aktif:
-                await do_buy(price, area, grid)
+        aksi_dilakukan = False
+        for pos in positions[:]:
+            if price >= pos['buy_price'] + grid:
+                await do_sell(pos, pos['buy_price'] + grid, grid)
+                aksi_dilakukan = True
 
-    if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP DARI HASIL SELL/TP")
-    gc.collect()
+        if not aksi_dilakukan and not paused and grid > 0:
+            if waiting_first_buy and len(positions) == 0:
+                buy_up = first_buy_base_price + grid
+                buy_down = first_buy_base_price - grid
+                if (price >= buy_up or price <= buy_down) and not area_aktif:
+                    if await do_buy(price, area, grid): waiting_first_buy = False
+            elif not waiting_first_buy:
+                buy_trigger = min([p['buy_price'] for p in positions]) - grid
+                if price <= buy_trigger and not area_aktif:
+                    await do_buy(price, area, grid)
+
+        if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP DARI HASIL SELL/TP")
+    except Exception as e:
+        logging.exception(f"ERROR DI TRADING_LOOP: {e}")
+    finally:
+        gc.collect()
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price(); usdt = get_balance("USDT"); positions = get_positions()
     profit = sum([BUFFER + (p['qty'] * last_grid) for p in positions])
     status_txt = "JALAN" if not paused else "PAUSE"
     txt = f"*{status_txt}* | Harga: `{price:.2f}`\nSaldo: `{usdt:.2f}` USDT\nATR AKTIF: `{last_grid}` | QTY_BIBIT: `{QTY_FIXED}` | Posisi: `{len(positions)}`\nProfit TP: `~{profit:.2f}` USDT"
-
     keyboard = [[KeyboardButton("STATUS")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
     await update.message.reply_text(txt, reply_markup=reply_markup, parse_mode="Markdown")
 
-# [FIX UTAMA] BIAR GAK EXIT CODE 0 DI FLY
+# [FIX FINAL] CARA PALING AMAN DI FLY
 async def main():
     global app
     app = ApplicationBuilder().token(TELE_TOKEN).build()
     app.add_handler(CommandHandler("start", status))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
-    app.job_queue.run_repeating(trading_loop, interval=3, first=3)
-
+    
+    # DAFTARIN JOB DULU BARU RUN
+    app.job_queue.run_repeating(trading_loop, interval=3, first=5)
+    
     await app.initialize()
     await app.start()
-    print("BOT JALAN...")
-    await app.updater.start_polling(allowed_updates=["message"], drop_pending_updates=True)
-    await app.updater.idle() # INI KUNCINYA: NUNGGU SELAMANYA
+    await app.updater.start_polling(drop_pending_updates=True)
+    logging.info("BOT JALAN...")
+    
+    # NUNGGU SIGNAL CTRL+C DARI FLY
+    stop_event = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        asyncio.get_running_loop().add_signal_handler(sig, stop_event.set)
+    await stop_event.wait()
+    
+    await app.stop()
+    await app.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
