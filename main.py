@@ -2,8 +2,8 @@ import os, time, asyncio, math, httpx, gc, logging
 from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton # [FIX] PAKAI REPLY KEYBOARD
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters # [FIX] HAPUS CALLBACK
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import pytz
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -308,24 +308,30 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
     if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP DARI HASIL SELL/TP")
     gc.collect()
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE): # [FIX] REPLY KEYBOARD
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price(); usdt = get_balance("USDT"); positions = get_positions()
     profit = sum([BUFFER + (p['qty'] * last_grid) for p in positions])
     status_txt = "JALAN" if not paused else "PAUSE"
     txt = f"*{status_txt}* | Harga: `{price:.2f}`\nSaldo: `{usdt:.2f}` USDT\nATR AKTIF: `{last_grid}` | QTY_BIBIT: `{QTY_FIXED}` | Posisi: `{len(positions)}`\nProfit TP: `~{profit:.2f}` USDT"
 
-    keyboard = [[KeyboardButton("STATUS")]] # TOMBOL NEMPEL BAWAH
+    keyboard = [[KeyboardButton("STATUS")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     await update.message.reply_text(txt, reply_markup=reply_markup, parse_mode="Markdown")
 
-def main(): # [FIX] HAPUS CALLBACK
+# [FIX UTAMA] BIAR GAK EXIT CODE 0 DI FLY
+async def main():
     global app
     app = ApplicationBuilder().token(TELE_TOKEN).build()
     app.add_handler(CommandHandler("start", status))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status)) # KLIK TOMBOL = JALANIN STATUS
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
     app.job_queue.run_repeating(trading_loop, interval=3, first=3)
-    app.run_polling(allowed_updates=["message"], drop_pending_updates=True)
+
+    await app.initialize()
+    await app.start()
+    print("BOT JALAN...")
+    await app.updater.start_polling(allowed_updates=["message"], drop_pending_updates=True)
+    await app.updater.idle() # INI KUNCINYA: NUNGGU SELAMANYA
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
