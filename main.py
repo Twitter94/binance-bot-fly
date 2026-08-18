@@ -2,8 +2,8 @@ import os, time, asyncio, math, httpx, gc, logging
 from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton # [FIX] PAKAI REPLY KEYBOARD
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters # [FIX] HAPUS CALLBACK
 import pytz
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -35,8 +35,8 @@ SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Cont
 # GLOBAL
 last_grid = 0; last_atr_check_price = 0; last_grid_update_day = 0; paused = False
 first_buy_base_price = 0; waiting_first_buy = True; first_run = True
-last_error_cache = set(); need_recovery = False
-app = None # [FIX 1] BIKIN DULU
+last_error_cache = set(); need_recovery = False; symbol_info_cache = None
+app = None
 
 async def send_telegram(msg):
     global last_error_cache
@@ -45,7 +45,7 @@ async def send_telegram(msg):
         last_error_cache.add(msg)
     else: last_error_cache.clear()
     try:
-        if app: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown") # [FIX 1]
+        if app: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown")
     except: pass
 
 def get_area(price, grid):
@@ -105,10 +105,12 @@ def get_atr():
     except: return ATR_DEFAULT, MIN_GRID
 
 def get_symbol_info():
-    info = retry_api(binance.get_symbol_info, PAIR)
-    if info is None:
-        info = {'filters': [{'filterType': 'LOT_SIZE', 'stepSize': '0.00001'}, {'filterType': 'MIN_NOTIONAL', 'minNotional': '10'}]}
-    return info
+    global symbol_info_cache
+    if symbol_info_cache is None:
+        info = retry_api(binance.get_symbol_info, PAIR)
+        if info is None: info = {'filters': [{'filterType': 'LOT_SIZE', 'stepSize': '0.00001'}, {'filterType': 'MIN_NOTIONAL', 'minNotional': '10'}]}
+        symbol_info_cache = info
+    return symbol_info_cache
 
 def get_trade_fee_safe():
     res = retry_api(lambda: binance.get_trade_fee(symbol=PAIR))
@@ -198,7 +200,8 @@ async def do_buy(price, area, grid):
     except:
         need_recovery = True
         await send_telegram(f"KRITIS: BUY SUKSES TAPI DB GAGAL! OrderID:`{order_id}`. AUTO RECOVERY AKAN DIJALANKAN 30 DETIK LAGI!"); return False
-    await send_telegram(f"BUY @`{price:.2f}`\nLOT: `~{price*qty:.2f}` USDT\nAREA: `{area:.2f}`\nID: `{order_id}`"); return True
+    usdt_terpakai = price * qty
+    await send_telegram(f"BUY @`{price:.2f}`\nQTY: `{qty}`\nLOT: `~{usdt_terpakai:.2f}` USDT\nAREA: `{area:.2f}`\nID: `{order_id}`"); return True
 
 async def do_sell(pos, price, grid, reason="TP"):
     try:
@@ -293,36 +296,36 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
 
     if not aksi_dilakukan and not paused and grid > 0:
         if waiting_first_buy and len(positions) == 0:
-            if (price >= first_buy_base_price + grid or price <= first_buy_base_price - grid) and not area_aktif:
-                if await do_buy(price, area, grid): waiting_first_buy = False; aksi_dilakukan = True
+            buy_up = first_buy_base_price + grid
+            buy_down = first_buy_base_price - grid
+            if (price >= buy_up or price <= buy_down) and not area_aktif:
+                if await do_buy(price, area, grid): waiting_first_buy = False
         elif not waiting_first_buy:
             buy_trigger = min([p['buy_price'] for p in positions]) - grid
             if price <= buy_trigger and not area_aktif:
-                await do_buy(price, area, grid); aksi_dilakukan = True
+                await do_buy(price, area, grid)
 
-    if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP | ATR: `{grid}`")
+    if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP DARI HASIL SELL/TP")
     gc.collect()
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE): # [FIX] REPLY KEYBOARD
     price = get_price(); usdt = get_balance("USDT"); positions = get_positions()
     profit = sum([BUFFER + (p['qty'] * last_grid) for p in positions])
     status_txt = "JALAN" if not paused else "PAUSE"
-    txt = f"*{status_txt}* | Harga: `{price:.2f}`\nSaldo: `{usdt:.2f}` USDT\nATR AKTIF: `{last_grid}` | Posisi: `{len(positions)}`\nProfit TP: `~{profit:.2f}` USDT"
-    keyboard = [[InlineKeyboardButton("REFRESH", callback_data='status')]]
-    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    txt = f"*{status_txt}* | Harga: `{price:.2f}`\nSaldo: `{usdt:.2f}` USDT\nATR AKTIF: `{last_grid}` | QTY_BIBIT: `{QTY_FIXED}` | Posisi: `{len(positions)}`\nProfit TP: `~{profit:.2f}` USDT"
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await status(update, context)
+    keyboard = [[KeyboardButton("STATUS")]] # TOMBOL NEMPEL BAWAH
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def main(): # [FIX 2] JANGAN ASYNC
+    await update.message.reply_text(txt, reply_markup=reply_markup, parse_mode="Markdown")
+
+def main(): # [FIX] HAPUS CALLBACK
     global app
     app = ApplicationBuilder().token(TELE_TOKEN).build()
     app.add_handler(CommandHandler("start", status))
-    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status)) # KLIK TOMBOL = JALANIN STATUS
     app.job_queue.run_repeating(trading_loop, interval=3, first=3)
-    app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True) # [FIX 3]
+    app.run_polling(allowed_updates=["message"], drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main() # [FIX 2]
+    main()
