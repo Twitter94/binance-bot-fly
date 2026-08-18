@@ -160,10 +160,15 @@ async def do_buy(price, area, grid):
     await send_telegram(f"BUY @`{price:.2f}`\nLOT: `~{price*qty:.2f}` USDT\nAREA: `{area:.2f}`"); return True
 
 async def do_sell(pos, price, grid, reason="TP"):
-    try: retry_api(binance.order_market_sell, symbol=PAIR, quantity=pos['qty'])
-    except Exception as e: await send_telegram(f"SELL GAGAL: {e}"; return False
-    try: delete_position(pos['area'])
-    except: pass
+    try: 
+        retry_api(binance.order_market_sell, symbol=PAIR, quantity=pos['qty'])
+    except Exception as e: 
+        await send_telegram(f"SELL GAGAL: {e}") # [FIX] UDAH BENER KURUNGNYA
+        return False
+    try: 
+        delete_position(pos['area'])
+    except: 
+        pass
     profit = BUFFER + (pos['qty'] * grid)
     await send_telegram(f"SELL {reason} @`{price:.2f}` +`{profit:.2f}`")
     re_area = get_area(price, grid)
@@ -240,4 +245,4 @@ app = ApplicationBuilder().token(TELE_TOKEN).build()
 app.add_handler(CommandHandler("start", status))
 app.job_queue.run_repeating(trading_loop, interval=3, first=3)
 
-app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True) # [FIX FINAL]
+app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
