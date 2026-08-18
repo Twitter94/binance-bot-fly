@@ -1,8 +1,7 @@
-import os, time, asyncio, math
+import os, time, asyncio, math, httpx
 from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-from supabase import create_client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 import pytz
@@ -27,7 +26,13 @@ ATR_DEFAULT = 500
 
 wib = pytz.timezone("Asia/Jakarta")
 binance = Client(API_KEY, API_SECRET)
-supa = create_client(SUPA_URL, SUPA_KEY)
+
+# [BARU] HEADER SUPABASE PAKE HTTPX
+SUPA_HEADERS = {
+    "apikey": SUPA_KEY,
+    "Authorization": f"Bearer {SUPA_KEY}",
+    "Content-Type": "application/json"
+}
 
 # GLOBAL - PINDAHIN KE SINI BIAR GK RESET
 last_grid = 0
@@ -48,16 +53,35 @@ def get_area(price, grid):
     if grid <= 0: grid = MIN_GRID
     return math.floor(price / grid) * grid
 
+# [BARU] SEMUA FUNGSI DB PAKE HTTPX
+def supa_select(table):
+    url = f"{SUPA_URL}/rest/v1/{table}?pair=eq.{PAIR}&order=buy_price.asc"
+    r = httpx.get(url, headers=SUPA_HEADERS, timeout=10)
+    return r.json()
+
+def supa_upsert(table, data):
+    url = f"{SUPA_URL}/rest/v1/{table}"
+    headers = {**SUPA_HEADERS, "Prefer": "resolution=merge-duplicates"}
+    httpx.post(url, json=data, headers=headers, timeout=10)
+
+def supa_update(table, where, data):
+    url = f"{SUPA_URL}/rest/v1/{table}?{where}"
+    httpx.patch(url, json=data, headers=SUPA_HEADERS, timeout=10)
+
+def supa_delete(table, where):
+    url = f"{SUPA_URL}/rest/v1/{table}?{where}"
+    httpx.delete(url, headers=SUPA_HEADERS, timeout=10)
+
 def get_positions():
-    res = supa.table("positions").select("*").eq("pair", PAIR).execute()
-    return sorted(res.data, key=lambda x: x['buy_price'])
+    return sorted(supa_select("positions"), key=lambda x: x['buy_price'])
 
 def save_position(area, buy_price, qty, fee, order_id):
     data = {"pair": PAIR, "area": area, "buy_price": buy_price, "qty": qty, "fee": fee, "order_id": str(order_id)}
-    supa.table("positions").upsert(data, on_conflict="pair,area").execute()
+    supa_upsert("positions", data)
 
 def delete_position(area):
-    supa.table("positions").delete().eq("pair", PAIR).eq("area", area).execute()
+    where = f"pair=eq.{PAIR}&area=eq.{area}"
+    supa_delete("positions", where)
 
 def update_all_positions_grid(new_grid, old_grid):
     positions = get_positions()
@@ -65,7 +89,8 @@ def update_all_positions_grid(new_grid, old_grid):
     if diff == 0: return
     for pos in positions:
         new_buy_price = pos['buy_price'] - diff
-        supa.table("positions").update({"buy_price": new_buy_price}).eq("pair", PAIR).eq("area", pos['area']).execute()
+        where = f"pair=eq.{PAIR}&area=eq.{pos['area']}"
+        supa_update("positions", where, {"buy_price": new_buy_price})
 
 def get_atr():
     try:
@@ -145,13 +170,13 @@ async def sell_all_instant(price, grid):
         await do_sell(pos, price, grid, "ATR-NAIK")
         await asyncio.sleep(0.5)
 
-async def trading_loop(context: ContextTypes.DEFAULT_TYPE): # [UDAH GK ADA WHILE TRUE]
+async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
     global last_grid, last_atr_check_price, last_grid_update_day, paused, need_recovery
     global first_buy_base_price, waiting_first_buy, first_run
     
     try:
         now = datetime.now(wib); price = get_price()
-        if price <= 0: return # SKIP KALAU 0
+        if price <= 0: return
         positions = get_positions()
         if first_run: first_run = False
         if len(positions) > 0: waiting_first_buy = False
