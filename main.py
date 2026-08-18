@@ -36,6 +36,7 @@ SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Cont
 last_grid = 0; last_atr_check_price = 0; last_grid_update_day = 0; paused = False
 first_buy_base_price = 0; waiting_first_buy = True; first_run = True
 last_error_cache = set(); need_recovery = False
+app = None # [FIX 1] BIKIN DULU BIAR BISA DIPAKE
 
 async def send_telegram(msg):
     global last_error_cache
@@ -43,7 +44,8 @@ async def send_telegram(msg):
         if msg in last_error_cache: return
         last_error_cache.add(msg)
     else: last_error_cache.clear()
-    try: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown")
+    try:
+        if app: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown") # [FIX 1]
     except: pass
 
 def get_area(price, grid):
@@ -244,8 +246,7 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(5)
         positions = get_positions()
 
-    # ========== LOGIKA BARU: SELALU UPDATE ATR ==========
-    _, atr_sekarang = get_atr() # Cek ATR setiap 3 detik
+    _, atr_sekarang = get_atr()
     atr_shift_dir = None; reason = ""
     now = datetime.now(wib)
 
@@ -260,7 +261,6 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
     if atr_shift_dir:
         old_grid = last_grid
         new_grid = atr_sekarang
-
         if atr_shift_dir == "NAIK":
             await sell_all_instant(price, old_grid, "NAIK")
             positions = []; waiting_first_buy = True; first_buy_base_price = price
@@ -269,16 +269,14 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
             update_all_positions_grid(new_grid, old_grid)
         elif atr_shift_dir == "JAM_00":
             await send_telegram(f"{reason} | GRID BARU: `{new_grid}`")
-
         last_grid = new_grid
         last_atr_check_price = price
-
-    elif last_grid!= atr_sekarang and last_grid > 0: # [GABUNGAN] ATR VOLATILITAS
+    elif last_grid!= atr_sekarang and last_grid > 0:
         await send_telegram(f"ATR UPDATE: `{last_grid}` -> `{atr_sekarang}`")
         update_all_positions_grid(atr_sekarang, last_grid)
         last_grid = atr_sekarang
 
-    if last_grid == 0: # First run
+    if last_grid == 0:
         last_grid = atr_sekarang
         last_atr_check_price = price
         if first_buy_base_price == 0: first_buy_base_price = price
@@ -289,7 +287,7 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
 
     aksi_dilakukan = False
     for pos in positions[:]:
-        if price >= pos['buy_price'] + grid: # TP SELALU PAKE GRID TERKINI
+        if price >= pos['buy_price'] + grid:
             await do_sell(pos, pos['buy_price'] + grid, grid)
             aksi_dilakukan = True
 
@@ -303,7 +301,6 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
                 await do_buy(price, area, grid); aksi_dilakukan = True
 
     if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP | ATR: `{grid}`")
-
     gc.collect()
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -319,9 +316,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await status(update, context)
 
-app = ApplicationBuilder().token(TELE_TOKEN).build()
-app.add_handler(CommandHandler("start", status))
-app.add_handler(CallbackQueryHandler(button))
-app.job_queue.run_repeating(trading_loop, interval=3, first=3) # [TETEP 3 DETIK]
+async def main(): # [FIX 2]
+    global app
+    app = ApplicationBuilder().token(TELE_TOKEN).build()
+    app.add_handler(CommandHandler("start", status))
+    app.add_handler(CallbackQueryHandler(button))
+    app.job_queue.run_repeating(trading_loop, interval=3, first=3)
+    await app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True) # [FIX 3]
 
-app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+if __name__ == "__main__":
+    asyncio.run(main())
