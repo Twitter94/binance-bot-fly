@@ -1,10 +1,13 @@
-import os, time, asyncio, math, httpx
+import os, time, asyncio, math, httpx, gc, logging
 from datetime import datetime
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import pytz
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("binance").setLevel(logging.WARNING)
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
@@ -25,34 +28,20 @@ ATR_SHIFT_PCT = 0.20
 ATR_DEFAULT = 500
 
 wib = pytz.timezone("Asia/Jakarta")
-binance = Client(API_KEY, API_SECRET)
-
-SUPA_HEADERS = {
-    "apikey": SUPA_KEY,
-    "Authorization": f"Bearer {SUPA_KEY}",
-    "Content-Type": "application/json"
-}
+binance = Client(API_KEY, API_SECRET, {"timeout": 10000})
+SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 # GLOBAL
-last_grid = 0
-last_atr_check_price = 0
-last_grid_update_day = 0
-paused = False
-symbol_info_cache = None
-need_recovery = False
-first_buy_base_price = 0
-waiting_first_buy = True
-first_run = True
-last_error_time = 0 # [BARU] ANTI SPAM
+last_grid = 0; last_atr_check_price = 0; last_grid_update_day = 0; paused = False
+first_buy_base_price = 0; waiting_first_buy = True; first_run = True
+last_error_cache = set()
 
 async def send_telegram(msg):
-    global last_error_time
-    # [BARU] kalau ERROR cuma kirim 1x per 60 detik
-    if "ERROR" in msg or "GAGAL" in msg or "KRITIS" in msg:
-        now = time.time()
-        if now - last_error_time < 60:
-            return
-        last_error_time = now
+    global last_error_cache
+    if any(x in msg for x in ["ERROR", "GAGAL", "KRITIS", "PAUSE"]):
+        if msg in last_error_cache: return
+        last_error_cache.add(msg)
+    else: last_error_cache.clear()
     try: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown")
     except: pass
 
@@ -62,21 +51,21 @@ def get_area(price, grid):
 
 def supa_select(table):
     url = f"{SUPA_URL}/rest/v1/{table}?pair=eq.{PAIR}&order=buy_price.asc"
-    r = httpx.get(url, headers=SUPA_HEADERS, timeout=10)
-    return r.json()
+    r = httpx.get(url, headers=SUPA_HEADERS, timeout=5)
+    return r.json() if r.status_code == 200 else []
 
 def supa_upsert(table, data):
     url = f"{SUPA_URL}/rest/v1/{table}"
     headers = {**SUPA_HEADERS, "Prefer": "resolution=merge-duplicates"}
-    httpx.post(url, json=data, headers=headers, timeout=10)
+    httpx.post(url, json=data, headers=headers, timeout=5)
 
 def supa_update(table, where, data):
     url = f"{SUPA_URL}/rest/v1/{table}?{where}"
-    httpx.patch(url, json=data, headers=SUPA_HEADERS, timeout=10)
+    httpx.patch(url, json=data, headers=SUPA_HEADERS, timeout=5)
 
 def supa_delete(table, where):
     url = f"{SUPA_URL}/rest/v1/{table}?{where}"
-    httpx.delete(url, headers=SUPA_HEADERS, timeout=10)
+    httpx.delete(url, headers=SUPA_HEADERS, timeout=5)
 
 def get_positions():
     try: return sorted(supa_select("positions"), key=lambda x: x['buy_price'])
@@ -112,23 +101,21 @@ def get_atr():
         return atr, grid
     except: return ATR_DEFAULT, MIN_GRID
 
-def get_symbol_info():
-    global symbol_info_cache
-    if symbol_info_cache is None: symbol_info_cache = retry_api(binance.get_symbol_info, PAIR)
-    return symbol_info_cache
+def get_symbol_info(): # [UBAH] CUMA DIPANGGIL PAS MAU BUY
+    info = retry_api(binance.get_symbol_info, PAIR)
+    if info is None:
+        info = {'filters': [{'filterType': 'LOT_SIZE', 'stepSize': '0.00001'}, {'filterType': 'MIN_NOTIONAL', 'minNotional': '10'}]}
+    return info
 
-def get_trade_fee_safe(): # [BARU] ANTI CRASH
-    try:
-        res = retry_api(lambda: binance.get_trade_fee(symbol=PAIR))
-        if not res or 'tradeFee' not in res: return 0.001
-        return float(res['tradeFee'][0]['maker']) / 100
-    except:
-        return 0.001
+def get_trade_fee_safe():
+    res = retry_api(lambda: binance.get_trade_fee(symbol=PAIR))
+    if not res or 'tradeFee' not in res: return 0.001
+    try: return float(res['tradeFee'][0]['maker']) / 100
+    except: return 0.001
 
 def get_qty_fee_usdtneed(price):
     if price <= 0: return 0,0,0
-    info = get_symbol_info()
-    if not info: return 0,0,0 # [PENGAMAN]
+    info = get_symbol_info() # [UBAH] BARU AMBIL DI SINI
     try:
         min_notional = float(next(f for f in info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
         step_size = float(next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')['stepSize'])
@@ -136,7 +123,7 @@ def get_qty_fee_usdtneed(price):
     qty = QTY_FIXED
     notional = price * qty
     if notional < min_notional: qty = math.ceil(min_notional / price / step_size) * step_size
-    fee = get_trade_fee_safe() # [PAKE YG BARU]
+    fee = get_trade_fee_safe()
     usdt_need = price * qty * (1 + fee*2 + BUFFER)
     return qty, fee, usdt_need
 
@@ -146,9 +133,9 @@ def bisa_buy_1_lot(price):
     return get_balance("USDT") >= usdt_need
 
 def retry_api(func, *args, **kwargs):
-    for i in range(3):
+    for i in range(2):
         try: return func(*args, **kwargs)
-        except: time.sleep(2)
+        except: time.sleep(1)
     return None
 
 def get_price():
@@ -162,22 +149,21 @@ def get_balance(asset):
     return float(res['free'])
 
 async def do_buy(price, area, grid):
-    global paused, need_recovery
-    qty, fee, usdt_need = get_qty_fee_usdtneed(price)
+    global paused
+    qty, fee, usdt_need = get_qty_fee_usdtneed(price) # [UBAH] symbol_info dipanggil di sini
     if usdt_need == 0 or get_balance("USDT") < usdt_need:
         paused = True; await send_telegram(f"PAUSE: SALDO KURANG. Butuh `{usdt_need:.2f}` USDT"); return False
     try: order = retry_api(binance.order_market_buy, symbol=PAIR, quantity=qty); order_id = order['orderId']
     except Exception as e: await send_telegram(f"BUY GAGAL: {e}"); return False
     try: save_position(area, price, qty, fee, order_id)
-    except: need_recovery = True; await send_telegram(f"KRITIS: BUY SUKSES TAPI DB GAGAL!"); return False
+    except: await send_telegram(f"KRITIS: BUY SUKSES TAPI DB GAGAL!"); return False
     await send_telegram(f"BUY @`{price:.2f}`\nLOT: `~{price*qty:.2f}` USDT\nAREA: `{area:.2f}`"); return True
 
 async def do_sell(pos, price, grid, reason="TP"):
-    global need_recovery
     try: retry_api(binance.order_market_sell, symbol=PAIR, quantity=pos['qty'])
     except Exception as e: await send_telegram(f"SELL GAGAL: {e}"); return False
     try: delete_position(pos['area'])
-    except: need_recovery = True
+    except: pass
     profit = BUFFER + (pos['qty'] * grid)
     await send_telegram(f"SELL {reason} @`{price:.2f}` +`{profit:.2f}`")
     re_area = get_area(price, grid)
@@ -191,52 +177,60 @@ async def sell_all_instant(price, grid):
         await asyncio.sleep(0.5)
 
 async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
-    global last_grid, last_atr_check_price, last_grid_update_day, paused, need_recovery
+    global last_grid, last_atr_check_price, last_grid_update_day, paused
     global first_buy_base_price, waiting_first_buy, first_run
-    
-    try:
-        now = datetime.now(wib); price = get_price()
-        if price <= 0: return
-        positions = get_positions()
-        if first_run: first_run = False
-        if len(positions) > 0: waiting_first_buy = False
 
-        grid = last_grid; area = get_area(price, grid)
-        for pos in positions[:]:
-            if price >= pos['buy_price'] + grid:
-                await do_sell(pos, pos['buy_price'] + grid, grid)
-                positions = get_positions()
+    price = get_price()
+    if price <= 0:
+        gc.collect() # [UBAH] GAK COCOK = LANGSUNG HAPUS
+        return
 
-        update_grid = False; reason = ""; atr_shift_dir = None
-        if now.hour == 0 and now.minute == 0 and last_grid_update_day!= now.day:
-            update_grid = True; reason = "ATR SHIFT 00:00"; last_grid_update_day = now.day
-        if last_grid > 0 and last_atr_check_price > 0:
-            change = (price - last_atr_check_price) / last_atr_check_price
-            if change >= ATR_SHIFT_PCT: update_grid = True; atr_shift_dir = "NAIK"; reason = "ATR SHIFT 20% NAIK"
-            elif change <= -ATR_SHIFT_PCT: update_grid = True; atr_shift_dir = "TURUN"; reason = "ATR SHIFT 20% TURUN"
+    positions = get_positions()
+    if first_run: first_run = False
+    if len(positions) > 0: waiting_first_buy = False
 
-        if update_grid or last_grid == 0:
-            old_grid = last_grid
-            _, new_grid = get_atr()
-            if atr_shift_dir == "NAIK": await sell_all_instant(price, old_grid); positions = []; waiting_first_buy = True; first_buy_base_price = price
-            elif atr_shift_dir == "TURUN": update_all_positions_grid(new_grid, old_grid)
-            last_grid = new_grid; last_atr_check_price = price
-            await send_telegram(f"{reason} | GRID BARU: `{last_grid}`")
-            if first_buy_base_price == 0: first_buy_base_price = price
-            grid = last_grid; area = get_area(price, grid)
+    # [UBAH] CEK GRID DULU. KALAU GAK ADA PERUBAHAN = SKIP SEMUA
+    update_grid = False; reason = ""; atr_shift_dir = None
+    now = datetime.now(wib)
+    if now.hour == 0 and now.minute == 0 and last_grid_update_day!= now.day:
+        update_grid = True; reason = "ATR SHIFT 00:00"; last_grid_update_day = now.day
+    if last_grid > 0 and last_atr_check_price > 0:
+        change = (price - last_atr_check_price) / last_atr_check_price
+        if change >= ATR_SHIFT_PCT: update_grid = True; atr_shift_dir = "NAIK"; reason = "ATR SHIFT 20% NAIK"
+        elif change <= -ATR_SHIFT_PCT: update_grid = True; atr_shift_dir = "TURUN"; reason = "ATR SHIFT 20% TURUN"
 
-        if not paused and grid > 0:
-            area_aktif = any(p['area'] == area for p in positions)
-            if waiting_first_buy and len(positions) == 0:
-                if (price >= first_buy_base_price + grid or price <= first_buy_base_price - grid) and not area_aktif:
-                    if await do_buy(price, area, grid): waiting_first_buy = False
-            elif not waiting_first_buy:
-                buy_trigger = min([p['buy_price'] for p in positions]) - grid
-                if price <= buy_trigger and not area_aktif: await do_buy(price, area, grid)
+    if update_grid or last_grid == 0:
+        old_grid = last_grid
+        _, new_grid = get_atr()
+        if atr_shift_dir == "NAIK": await sell_all_instant(price, old_grid); positions = []; waiting_first_buy = True; first_buy_base_price = price
+        elif atr_shift_dir == "TURUN": update_all_positions_grid(new_grid, old_grid)
+        last_grid = new_grid; last_atr_check_price = price
+        await send_telegram(f"{reason} | GRID BARU: `{last_grid}`")
+        if first_buy_base_price == 0: first_buy_base_price = price
+    grid = last_grid
 
-        if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP")
+    # [UBAH] CEK COCOK BUY/SELL APA GK. KALAU GK = LANGSUNG KELUAR + HAPUS RAM
+    area = get_area(price, grid)
+    area_aktif = any(p['area'] == area for p in positions)
 
-    except Exception as e: await send_telegram(f"ERROR: {e}")
+    aksi_dilakukan = False
+    for pos in positions[:]:
+        if price >= pos['buy_price'] + grid: # COCOK SELL
+            await do_sell(pos, pos['buy_price'] + grid, grid)
+            aksi_dilakukan = True
+
+    if not aksi_dilakukan and not paused and grid > 0:
+        if waiting_first_buy and len(positions) == 0:
+            if (price >= first_buy_base_price + grid or price <= first_buy_base_price - grid) and not area_aktif:
+                if await do_buy(price, area, grid): waiting_first_buy = False; aksi_dilakukan = True
+        elif not waiting_first_buy:
+            buy_trigger = min([p['buy_price'] for p in positions]) - grid
+            if price <= buy_trigger and not area_aktif:
+                await do_buy(price, area, grid); aksi_dilakukan = True
+
+    if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP"); aksi_dilakukan = True
+
+    gc.collect() # [UBAH] ABIS CEK = LANGSUNG BUANG SAMPAH
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price(); usdt = get_balance("USDT"); positions = get_positions()
@@ -246,7 +240,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 app = ApplicationBuilder().token(TELE_TOKEN).build()
 app.add_handler(CommandHandler("start", status))
-app.job_queue.run_repeating(trading_loop, interval=3, first=3)
+app.job_queue.run_repeating(trading_loop, interval=3, first=3) # [UBAH] BALIK LAGI 3 DETIK
 
 if __name__ == "__main__":
     app.run_polling()
