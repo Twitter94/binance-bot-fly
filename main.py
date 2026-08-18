@@ -101,7 +101,7 @@ def get_atr():
         return atr, grid
     except: return ATR_DEFAULT, MIN_GRID
 
-def get_symbol_info(): # [UBAH] CUMA DIPANGGIL PAS MAU BUY
+def get_symbol_info():
     info = retry_api(binance.get_symbol_info, PAIR)
     if info is None:
         info = {'filters': [{'filterType': 'LOT_SIZE', 'stepSize': '0.00001'}, {'filterType': 'MIN_NOTIONAL', 'minNotional': '10'}]}
@@ -115,7 +115,7 @@ def get_trade_fee_safe():
 
 def get_qty_fee_usdtneed(price):
     if price <= 0: return 0,0,0
-    info = get_symbol_info() # [UBAH] BARU AMBIL DI SINI
+    info = get_symbol_info()
     try:
         min_notional = float(next(f for f in info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
         step_size = float(next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')['stepSize'])
@@ -150,7 +150,7 @@ def get_balance(asset):
 
 async def do_buy(price, area, grid):
     global paused
-    qty, fee, usdt_need = get_qty_fee_usdtneed(price) # [UBAH] symbol_info dipanggil di sini
+    qty, fee, usdt_need = get_qty_fee_usdtneed(price)
     if usdt_need == 0 or get_balance("USDT") < usdt_need:
         paused = True; await send_telegram(f"PAUSE: SALDO KURANG. Butuh `{usdt_need:.2f}` USDT"); return False
     try: order = retry_api(binance.order_market_buy, symbol=PAIR, quantity=qty); order_id = order['orderId']
@@ -161,7 +161,7 @@ async def do_buy(price, area, grid):
 
 async def do_sell(pos, price, grid, reason="TP"):
     try: retry_api(binance.order_market_sell, symbol=PAIR, quantity=pos['qty'])
-    except Exception as e: await send_telegram(f"SELL GAGAL: {e}"); return False
+    except Exception as e: await send_telegram(f"SELL GAGAL: {e}"; return False
     try: delete_position(pos['area'])
     except: pass
     profit = BUFFER + (pos['qty'] * grid)
@@ -182,14 +182,13 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
 
     price = get_price()
     if price <= 0:
-        gc.collect() # [UBAH] GAK COCOK = LANGSUNG HAPUS
+        gc.collect()
         return
 
     positions = get_positions()
     if first_run: first_run = False
     if len(positions) > 0: waiting_first_buy = False
 
-    # [UBAH] CEK GRID DULU. KALAU GAK ADA PERUBAHAN = SKIP SEMUA
     update_grid = False; reason = ""; atr_shift_dir = None
     now = datetime.now(wib)
     if now.hour == 0 and now.minute == 0 and last_grid_update_day!= now.day:
@@ -209,13 +208,12 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
         if first_buy_base_price == 0: first_buy_base_price = price
     grid = last_grid
 
-    # [UBAH] CEK COCOK BUY/SELL APA GK. KALAU GK = LANGSUNG KELUAR + HAPUS RAM
     area = get_area(price, grid)
     area_aktif = any(p['area'] == area for p in positions)
 
     aksi_dilakukan = False
     for pos in positions[:]:
-        if price >= pos['buy_price'] + grid: # COCOK SELL
+        if price >= pos['buy_price'] + grid:
             await do_sell(pos, pos['buy_price'] + grid, grid)
             aksi_dilakukan = True
 
@@ -230,7 +228,7 @@ async def trading_loop(context: ContextTypes.DEFAULT_TYPE):
 
     if paused and bisa_buy_1_lot(price): paused = False; await send_telegram(f"LANJUT: SALDO CUKUP"); aksi_dilakukan = True
 
-    gc.collect() # [UBAH] ABIS CEK = LANGSUNG BUANG SAMPAH
+    gc.collect()
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price(); usdt = get_balance("USDT"); positions = get_positions()
@@ -240,7 +238,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 app = ApplicationBuilder().token(TELE_TOKEN).build()
 app.add_handler(CommandHandler("start", status))
-app.job_queue.run_repeating(trading_loop, interval=3, first=3) # [UBAH] BALIK LAGI 3 DETIK
+app.job_queue.run_repeating(trading_loop, interval=3, first=3)
 
-if __name__ == "__main__":
-    app.run_polling()
+app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True) # [FIX FINAL]
