@@ -10,4 +10,4 @@ primary_region = "sin"
   cpus = 1 # 1 cpu shared
 
 [processes]
-  app = "python bot.py"
+  app = "python main.py"
