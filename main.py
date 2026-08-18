@@ -27,14 +27,13 @@ ATR_DEFAULT = 500
 wib = pytz.timezone("Asia/Jakarta")
 binance = Client(API_KEY, API_SECRET)
 
-# [BARU] HEADER SUPABASE PAKE HTTPX
 SUPA_HEADERS = {
     "apikey": SUPA_KEY,
     "Authorization": f"Bearer {SUPA_KEY}",
     "Content-Type": "application/json"
 }
 
-# GLOBAL - PINDAHIN KE SINI BIAR GK RESET
+# GLOBAL
 last_grid = 0
 last_atr_check_price = 0
 last_grid_update_day = 0
@@ -44,8 +43,16 @@ need_recovery = False
 first_buy_base_price = 0
 waiting_first_buy = True
 first_run = True
+last_error_time = 0 # [BARU] ANTI SPAM
 
 async def send_telegram(msg):
+    global last_error_time
+    # [BARU] kalau ERROR cuma kirim 1x per 60 detik
+    if "ERROR" in msg or "GAGAL" in msg or "KRITIS" in msg:
+        now = time.time()
+        if now - last_error_time < 60:
+            return
+        last_error_time = now
     try: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown")
     except: pass
 
@@ -53,7 +60,6 @@ def get_area(price, grid):
     if grid <= 0: grid = MIN_GRID
     return math.floor(price / grid) * grid
 
-# [BARU] SEMUA FUNGSI DB PAKE HTTPX
 def supa_select(table):
     url = f"{SUPA_URL}/rest/v1/{table}?pair=eq.{PAIR}&order=buy_price.asc"
     r = httpx.get(url, headers=SUPA_HEADERS, timeout=10)
@@ -73,7 +79,8 @@ def supa_delete(table, where):
     httpx.delete(url, headers=SUPA_HEADERS, timeout=10)
 
 def get_positions():
-    return sorted(supa_select("positions"), key=lambda x: x['buy_price'])
+    try: return sorted(supa_select("positions"), key=lambda x: x['buy_price'])
+    except: return []
 
 def save_position(area, buy_price, qty, fee, order_id):
     data = {"pair": PAIR, "area": area, "buy_price": buy_price, "qty": qty, "fee": fee, "order_id": str(order_id)}
@@ -110,15 +117,26 @@ def get_symbol_info():
     if symbol_info_cache is None: symbol_info_cache = retry_api(binance.get_symbol_info, PAIR)
     return symbol_info_cache
 
+def get_trade_fee_safe(): # [BARU] ANTI CRASH
+    try:
+        res = retry_api(lambda: binance.get_trade_fee(symbol=PAIR))
+        if not res or 'tradeFee' not in res: return 0.001
+        return float(res['tradeFee'][0]['maker']) / 100
+    except:
+        return 0.001
+
 def get_qty_fee_usdtneed(price):
     if price <= 0: return 0,0,0
     info = get_symbol_info()
-    min_notional = float(next(f for f in info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
-    step_size = float(next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')['stepSize'])
+    if not info: return 0,0,0 # [PENGAMAN]
+    try:
+        min_notional = float(next(f for f in info['filters'] if f['filterType'] == 'MIN_NOTIONAL')['minNotional'])
+        step_size = float(next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')['stepSize'])
+    except: return 0,0,0
     qty = QTY_FIXED
     notional = price * qty
     if notional < min_notional: qty = math.ceil(min_notional / price / step_size) * step_size
-    fee = float(retry_api(lambda: binance.get_trade_fee(symbol=PAIR))['tradeFee'][0]['maker']) / 100
+    fee = get_trade_fee_safe() # [PAKE YG BARU]
     usdt_need = price * qty * (1 + fee*2 + BUFFER)
     return qty, fee, usdt_need
 
@@ -138,8 +156,10 @@ def get_price():
     except: return 0
 
 def get_balance(asset):
-    try: return float(retry_api(binance.get_asset_balance, asset=asset)['free'])
-    except: return 0
+    try: res = retry_api(binance.get_asset_balance, asset=asset)
+    except: res = None
+    if not res: return 0
+    return float(res['free'])
 
 async def do_buy(price, area, grid):
     global paused, need_recovery
