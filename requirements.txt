@@ -1,4 +1,4 @@
-python-telegram-bot==20.7
+python-telegram-bot[job-queue]==20.7
 python-binance==1.0.29
 httpx==0.25.2
 pytz==2024.1
