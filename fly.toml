@@ -1,13 +1,13 @@
-app = 'bahaya'
-primary_region = 'sin'
+app = "bahaya"
+primary_region = "sin"
 
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
+[build]
+  dockerfile = "Dockerfile"
 
-[env]
-  PAIR = "BTCUSDT"
-  LOT = "5"
+[[vm]]
+  memory = "256mb" # INI KUNCINYA. DARI 512 JADI 256
+  cpu_kind = "shared"
+  cpus = 1 # 1 cpu shared
+
+[processes]
+  app = "python bot.py"
