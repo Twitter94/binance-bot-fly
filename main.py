@@ -36,7 +36,7 @@ SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Cont
 last_grid = 0; last_atr_check_price = 0; last_grid_update_day = 0; paused = False
 first_buy_base_price = 0; waiting_first_buy = True; first_run = True
 last_error_cache = set(); need_recovery = False
-app = None # [FIX 1] BIKIN DULU BIAR BISA DIPAKE
+app = None # [FIX 1] BIKIN DULU
 
 async def send_telegram(msg):
     global last_error_cache
@@ -316,13 +316,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await status(update, context)
 
-async def main(): # [FIX 2]
+def main(): # [FIX 2] JANGAN ASYNC
     global app
     app = ApplicationBuilder().token(TELE_TOKEN).build()
     app.add_handler(CommandHandler("start", status))
     app.add_handler(CallbackQueryHandler(button))
     app.job_queue.run_repeating(trading_loop, interval=3, first=3)
-    await app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True) # [FIX 3]
+    app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True) # [FIX 3]
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main() # [FIX 2]
