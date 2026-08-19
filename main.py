@@ -28,7 +28,7 @@ BUFFER = 0.0005
 FEE = 0.001
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
-MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10"))
+MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "5"))
 
 BINANCE_URL = "https://api.binance.com"
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -104,7 +104,7 @@ def get_atr_grid():
 
 def get_qty(price):
     info = binance_get("/api/v3/exchangeInfo")
-    min_n_binance = 10
+    min_n_binance = 5
     step = 0.000001
     for s in info.get('symbols', []):
         if s['symbol'] == PAIR:
