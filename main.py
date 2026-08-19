@@ -6,8 +6,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 gc.enable()
 
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
 PAIR = os.getenv("PAIR", "BTCUSDT")
 COIN = PAIR.replace("USDT", "")
 TELE_TOKEN = os.getenv("TELE_TOKEN")
@@ -18,7 +18,7 @@ SUPA_KEY = os.getenv("SUPA_KEY")
 MIN_GRID = 250; MAX_GRID = 1000; QTY_FIXED = 0.00001
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 FEE = 0.001; SELISIH_TOLERANSI = 0.00001
-DELAY_FIRST_BUY = 1800; MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10"))
+DELAY_FIRST_BUY = 1800; MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "5"))
 
 # MESIN V28.9 = PAKAI python-binance
 binance = Client(API_KEY, API_SECRET, {"timeout": 10}) 
