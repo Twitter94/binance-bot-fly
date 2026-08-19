@@ -18,7 +18,7 @@ ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 FEE = 0.001
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800 # 30 menit
-MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "5")) # BARU: DARI.ENV
+MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10")) # DARI.ENV
 
 binance = Client(API_KEY, API_SECRET, {"timeout": 3})
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -34,23 +34,31 @@ last_roling_notif = False
 error_sudah_dikirim = set()
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
+
 def supa_req(m,u,**k):
     try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=3,**k)
     except: return None
+
 def get_positions():
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
     return r.json() if r and r.status_code==200 else []
+
 def area_aktif(area, positions): return any(p['area'] == area for p in positions)
+
 def get_pos_by_area(area, positions): return [p for p in positions if p['area'] == area]
+
 def get_balance(asset):
     try: return float(binance.get_asset_balance(asset)['free'])
     except: return 0
+
 def get_price():
     try: return float(binance.get_symbol_ticker(symbol=PAIR)['price'])
     except: return 0
+
 def get_binance_balance_coin():
     try: return float(binance.get_asset_balance(PAIR.replace("USDT",""))['free'])
     except: return 0
+
 def get_atr_grid():
     try:
         k = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
@@ -58,6 +66,7 @@ def get_atr_grid():
         atr = sum(tr)/len(tr) if tr else 500
         return max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
     except: return MIN_GRID
+
 def get_qty(price):
     try:
         info = binance.get_symbol_info(PAIR)
@@ -65,10 +74,10 @@ def get_qty(price):
         step = float(next(f['stepSize'] for f in info['filters'] if f['filterType']=='LOT_SIZE'))
         qty = QTY_FIXED
         min_n = max(MIN_NOTIONAL_ENV, min_n_binance) # PAKE YG TERBESAR
-        if price*qty < min_n: 
+        if price*qty < min_n:
             qty = math.ceil(min_n/price/step)*step
         return round(qty, 8)
-    except: 
+    except:
         return QTY_FIXED
 
 KEYBOARD = ReplyKeyboardMarkup([[KeyboardButton("STATUS")]], resize_keyboard=True, one_time_keyboard=False)
@@ -93,7 +102,8 @@ async def notif_error(tipe, msg):
     if key in error_sudah_dikirim: return
     error_sudah_dikirim.add(key)
     await notif_status(f"⚠️ *{tipe}*: `{msg}`")
-    async def sinkron_db_dengan_binance():
+
+async def sinkron_db_dengan_binance():
     positions_db = get_positions()
     balance_coin = get_binance_balance_coin()
     total_qty_db = sum(p['qty'] for p in positions_db)
@@ -121,10 +131,10 @@ async def satpam_buy(price, area, reason="GRID"):
         supa_req("POST", f"{SUPA_URL}/rest/v1/positions",
                  json={"pair":PAIR,"area":area,"buy_price":price,"qty":qty,"order_id":str(order['orderId'])},
                  headers={**SUPA_HEADERS,"Prefer":"resolution=merge-duplicates"})
-        
+
         lot_val = price * qty
         await notif_event(f"🟢 *BUY SUKSES*\nHarga: `${price:.2f}`\nArea: `{area}`\nLot: `${lot_val:.2f}` | Qty: `{qty:.8f}`")
-        
+
         last_kurang_notif = False
         last_roling_notif = False
         mode_flexible = False
@@ -146,10 +156,10 @@ async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&area=eq.{area}")
         avg_buy = sum(p['buy_price']*p['qty'] for p in positions_in_area) / total_qty
         profit = (price - avg_buy) * total_qty * (1 - BUFFER)
-        
+
         lot_val = price * total_qty
         await notif_event(f"🔴 *SELL SELESAI*\nMode: `{mode}`\nArea: `{area}`\nHarga: `${price:.2f}`\nLot: `${lot_val:.2f}`\nProfit: `~${profit:.2f}`")
-        
+
         if mode == "ROLING":
             last_kurang_notif = False
             last_roling_notif = False
@@ -171,7 +181,7 @@ async def satpam_sell_instansemua(all_positions, price):
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
         avg_buy = sum(p['buy_price']*p['qty'] for p in all_positions) / total_qty
         profit = (price - avg_buy) * total_qty
-        
+
         lot_val = price * total_qty
         await notif_event(f"🔴 *SELL INSTAN SELESAI*\nHarga: `${price:.2f}`\nLot: `${lot_val:.2f}`\nProfit: `~${profit:.2f}`")
 
@@ -182,7 +192,8 @@ async def satpam_sell_instansemua(all_positions, price):
     except Exception as e:
         await notif_error("SELL INSTAN GAGAL", str(e))
     finally: is_executing = False
-        async def cek_dana_dan_jual(usdt_need, price):
+
+async def cek_dana_dan_jual(usdt_need, price):
     global last_kurang_notif, last_roling_notif
     positions = get_positions()
     if not positions:
@@ -271,23 +282,23 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
     price = get_price(); usdt = get_balance("USDT"); pos = get_positions()
-    
+
     mode_txt = "🟢 RUN" if not mode_flexible else "🔴 PAUSE"
     lot_val = price * get_qty(price)
     min_notional = MIN_NOTIONAL_ENV
-    
+
     txt = f"*STATUS V29.6 ANTI SPAM*\n"
     txt += f"{mode_txt} | *Harga:* `${price:.2f}`\n"
     txt += f"*SALDO:* `${usdt:.4f}`\n"
     txt += f"*GRID:* `${last_grid:.2f}` | *LOT:* `${lot_val:.2f}` | *Min:* `${min_notional:.1f}`\n"
     txt += f"| *Fee:* `0.100%` | *Posisi:* `{len(pos)}`\n\n"
-    
+
     if pos:
         txt += f"📍 *POSISI*\n"
         for p in pos:
             tp_price = p['buy_price'] + last_grid
             txt += f"BUY `${p['buy_price']:.2f}` -> TP `${tp_price:.2f}`\n"
-    
+
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
 async def main():
