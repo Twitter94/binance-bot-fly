@@ -1,10 +1,12 @@
 import os
 import time
 import math
-import requests
-import signal
+import hmac
+import hashlib
 import asyncio
 import gc
+import signal
+import httpx
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -28,7 +30,7 @@ BUFFER = 0.0005
 FEE = 0.001
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
-MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "5"))
+MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10"))
 
 BINANCE_URL = "https://api.binance.com"
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -49,28 +51,46 @@ def get_area(price, grid):
 
 def supa_req(m, u, **k):
     try:
-        return requests.request(m, u, headers=SUPA_HEADERS, timeout=3, **k)
+        return requests.request(m, u, headers=SUPA_HEADERS, timeout=5, **k)
     except:
         return None
 
-def binance_get(path, params={}):
-    try:
-        params['symbol'] = PAIR
-        r = requests.get(f"{BINANCE_URL}{path}", params=params, headers={"X-MBX-APIKEY": API_KEY}, timeout=3)
-        return r.json() if r.status_code == 200 else {}
-    except:
-        return {}
+async def binance_get(path, params={}):
+    params['symbol'] = PAIR
+    url = f"{BINANCE_URL}{path}"
+    headers = {"X-MBX-APIKEY": API_KEY}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for i in range(3):
+            try:
+                r = await client.get(url, params=params, headers=headers)
+                return r.json() if r.status_code == 200 else {}
+            except Exception as e:
+                print(f"Binance GET retry {i+1}/3: {e}")
+                await asyncio.sleep(2)
+    return {}
 
-def binance_post(path, params={}):
-    try:
-        params['symbol'] = PAIR
-        params['timestamp'] = int(time.time() * 1000)
-        r = requests.post(f"{BINANCE_URL}{path}", params=params, headers={"X-MBX-APIKEY": API_KEY}, timeout=5)
-        return r.json()
-    except:
-        return {}
+async def binance_post(path, params={}):
+    params['symbol'] = PAIR
+    params['timestamp'] = int(time.time() * 1000)
+    params['recvWindow'] = 10000
 
-def get_positions():
+    query_string = '&'.join([f"{k}={v}" for k,v in params.items() if k!= 'signature'])
+    signature = hmac.new(API_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+    params['signature'] = signature
+
+    url = f"{BINANCE_URL}{path}"
+    headers = {"X-MBX-APIKEY": API_KEY}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for i in range(3):
+            try:
+                r = await client.post(url, params=params, headers=headers)
+                return r.json()
+            except Exception as e:
+                print(f"Binance POST retry {i+1}/3: {e}")
+                await asyncio.sleep(2)
+    return {}
+
+async def get_positions():
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
     return r.json() if r and r.status_code == 200 else []
 
@@ -80,31 +100,31 @@ def area_aktif(area, positions):
 def get_pos_by_area(area, positions):
     return [p for p in positions if p['area'] == area]
 
-def get_balance(asset):
-    data = binance_get("/api/v3/account")
+async def get_balance(asset):
+    data = await binance_get("/api/v3/account")
     for b in data.get('balances', []):
         if b['asset'] == asset:
             return float(b['free'])
     return 0
 
-def get_price():
-    data = binance_get("/api/v3/ticker/price")
+async def get_price():
+    data = await binance_get("/api/v3/ticker/price")
     return float(data.get('price', 0))
 
-def get_binance_balance_coin():
-    return get_balance(COIN)
+async def get_binance_balance_coin():
+    return await get_balance(COIN)
 
-def get_atr_grid():
-    data = binance_get("/api/v3/klines", {"interval": "1h", "limit": ATR_PERIOD + 1})
+async def get_atr_grid():
+    data = await binance_get("/api/v3/klines", {"interval": "1h", "limit": ATR_PERIOD + 1})
     if not data:
         return MIN_GRID
     tr = [abs(float(data[i][4]) - float(data[i - 1][4])) for i in range(1, len(data))]
     atr = sum(tr) / len(tr) if tr else 500
     return max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
 
-def get_qty(price):
-    info = binance_get("/api/v3/exchangeInfo")
-    min_n_binance = 5
+async def get_qty(price):
+    info = await binance_get("/api/v3/exchangeInfo")
+    min_n_binance = 10
     step = 0.000001
     for s in info.get('symbols', []):
         if s['symbol'] == PAIR:
@@ -119,11 +139,11 @@ def get_qty(price):
         qty = math.ceil(min_n / price / step) * step
     return round(qty, 8)
 
-def binance_order_market(side, qty):
-    return binance_post("/api/v3/order", {"side": side, "type": "MARKET", "quantity": qty})
+async def binance_order_market(side, qty):
+    return await binance_post("/api/v3/order", {"side": side, "type": "MARKET", "quantity": qty})
 
-def binance_get_order(orderId):
-    return binance_get("/api/v3/order", {"orderId": orderId})
+async def binance_get_order(orderId):
+    return await binance_get("/api/v3/order", {"orderId": orderId})
 
 KEYBOARD = ReplyKeyboardMarkup([[KeyboardButton("STATUS")]], resize_keyboard=True)
 
@@ -156,8 +176,8 @@ async def notif_error(tipe, msg):
     await notif_status(f"⚠️ *{tipe}*: `{msg}`")
 
 async def sinkron_db_dengan_binance():
-    positions_db = get_positions()
-    balance_coin = get_binance_balance_coin()
+    positions_db = await get_positions()
+    balance_coin = await get_binance_balance_coin()
     total_qty_db = sum(p['qty'] for p in positions_db)
     if abs(balance_coin - total_qty_db) > SELISIH_TOLERANSI:
         await notif_status(f"🔄 *SYNC*: DB `{total_qty_db:.8f}` vs BINANCE `{balance_coin:.8f}`. RESET DB")
@@ -173,12 +193,12 @@ async def satpam_buy(price, area, reason="GRID"):
     await sinkron_db_dengan_binance()
     await notif_event(f"🟢 *BUY* [`{reason}`] @`${price:.2f}` AREA `{area}`")
     try:
-        qty = get_qty(price)
+        qty = await get_qty(price)
         usdt_need = price * qty * (1 + FEE * 2 + BUFFER)
-        if get_balance("USDT") < usdt_need:
+        if await get_balance("USDT") < usdt_need:
             if not await cek_dana_dan_jual(usdt_need, price):
                 return
-        order = binance_order_market("BUY", qty)
+        order = await binance_order_market("BUY", qty)
         if order.get('status')!= 'FILLED':
             return
         supa_req("POST", f"{SUPA_URL}/rest/v1/positions",
@@ -203,7 +223,7 @@ async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
     total_qty = sum(p['qty'] for p in positions_in_area)
     await notif_event(f"🔴 *SELL* [`{mode}`] AREA `{area}` @`${price:.2f}` QTY `{total_qty:.8f}`")
     try:
-        order = binance_order_market("SELL", total_qty)
+        order = await binance_order_market("SELL", total_qty)
         if order.get('status')!= 'FILLED':
             return
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&area=eq.{area}")
@@ -229,7 +249,7 @@ async def satpam_sell_instansemua(all_positions, price):
     total_qty = sum(p['qty'] for p in all_positions)
     await notif_event(f"🔴 *SELL INSTAN* [LUAR GRID] @`${price:.2f}` QTY `{total_qty:.8f}`")
     try:
-        order = binance_order_market("SELL", total_qty)
+        order = await binance_order_market("SELL", total_qty)
         if order.get('status')!= 'FILLED':
             return
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
@@ -247,7 +267,7 @@ async def satpam_sell_instansemua(all_positions, price):
 
 async def cek_dana_dan_jual(usdt_need, price):
     global last_kurang_notif, last_roling_notif
-    positions = get_positions()
+    positions = await get_positions()
     if not positions:
         if not last_kurang_notif:
             await notif_status(f"⚠️ *SALDO KURANG*. GAK ADA POSISI BUAT ROLING")
@@ -262,7 +282,7 @@ async def cek_dana_dan_jual(usdt_need, price):
         if price >= buy_terendah + last_grid:
             await satpam_sell_area(area, pos_in_area, price, mode="ROLING")
             await asyncio.sleep(2)
-            if get_balance("USDT") >= usdt_need:
+            if await get_balance("USDT") >= usdt_need:
                 await notif_event(f"✅ *ROLING SUKSES*. LANJUT BUY")
                 del positions
                 gc.collect()
@@ -295,11 +315,11 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     if is_executing:
         gc.collect()
         return
-    price = get_price()
-    if price == 0: # UDAH DIBENERIN JADI ==
+    price = await get_price()
+    if price == 0:
         gc.collect()
         return
-    positions = get_positions()
+    positions = await get_positions()
     if not positions:
         if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
             area = get_area(price, last_grid)
@@ -331,11 +351,12 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
-    price = get_price()
-    usdt = get_balance("USDT")
-    pos = get_positions()
+    price = await get_price()
+    usdt = await get_balance("USDT")
+    pos = await get_positions()
     mode_txt = "🟢 RUN" if not mode_flexible else "🔴 PAUSE"
-    txt = f"*STATUS V29.13 STABIL*\n{mode_txt} | *Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * get_qty(price):.2f}` | *Min:* `${MIN_NOTIONAL_ENV:.1f}`\n| *Posisi:* `{len(pos)}`"
+    qty = await get_qty(price)
+    txt = f"*STATUS V29.14 ASYNC*\n{mode_txt} | *Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}` | *Min:* `${MIN_NOTIONAL_ENV:.1f}`\n| *Posisi:* `{len(pos)}`"
     if pos:
         txt += f"\n\n📍 *POSISI*\n"
         for p in pos:
@@ -350,9 +371,9 @@ async def main():
     app.add_handler(CommandHandler("start", status))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
     await sinkron_db_dengan_binance()
-    db = get_positions()
-    last_grid = get_atr_grid()
-    base_price_start = get_price()
+    db = await get_positions()
+    last_grid = await get_atr_grid()
+    base_price_start = await get_price()
     if len(db) > 0:
         mode_flexible = False
     await cek_pengaman_restart(base_price_start, db)
