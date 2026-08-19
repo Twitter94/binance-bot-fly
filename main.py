@@ -20,7 +20,8 @@ ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 FEE = 0.001; SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800; MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10"))
 
-binance = Client(API_KEY, API_SECRET, {"timeout": 10}) # TIMEOUT GEDEIN
+# MESIN V28.9 = PAKAI python-binance
+binance = Client(API_KEY, API_SECRET, {"timeout": 10}) 
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 last_grid = 0; base_price_start = 0; app = None
@@ -40,6 +41,7 @@ async def get_positions():
 def area_aktif(area, positions): return any(p['area'] == area for p in positions)
 def get_pos_by_area(area, positions): return [p for p in positions if p['area'] == area]
 
+# FUNGSI BINANCE DARI V28.9
 def get_balance(asset):
     try: return float(binance.get_asset_balance(asset)['free'])
     except: return 0
@@ -94,6 +96,7 @@ async def sinkron_db_dengan_binance():
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
     del positions_db; gc.collect()
 
+# ALUR V29.15 = ADA ROLING + ANTI NYANGKUT
 async def satpam_buy(price, area, reason="GRID"):
     global is_executing, mode_flexible, last_kurang_notif, last_roling_notif
     if is_executing: return
@@ -103,7 +106,7 @@ async def satpam_buy(price, area, reason="GRID"):
         await notif_event(f"🟢 *BUY* [`{reason}`] @`${price:.2f}` AREA `{area}`")
         qty = get_qty(price); usdt_need = price * qty * (1 + FEE * 2 + BUFFER)
         if get_balance("USDT") < usdt_need:
-            if not await cek_dana_dan_jual(usdt_need, price): return
+            if not await cek_dana_dan_jual(usdt_need, price): return # FITUR ROLING V29
         order = binance.order_market_buy(symbol=PAIR, quantity=qty)
         if order['status']!= 'FILLED': return
         supa_req("POST", f"{SUPA_URL}/rest/v1/positions", json={"pair": PAIR, "area": area, "buy_price": price, "qty": qty, "order_id": str(order['orderId'])}, headers={**SUPA_HEADERS, "Prefer": "resolution=merge-duplicates"})
@@ -152,6 +155,7 @@ async def satpam_sell_instansemua(all_positions, price):
     except Exception as e: await notif_error("SELL INSTAN GAGAL", str(e))
     finally: is_executing = False; del all_positions; gc.collect()
 
+# FITUR ROLING DARI V29.15
 async def cek_dana_dan_jual(usdt_need, price):
     global last_kurang_notif, last_roling_notif
     positions = await get_positions()
@@ -167,6 +171,7 @@ async def cek_dana_dan_jual(usdt_need, price):
     if not last_roling_notif: await notif_status(f"⚠️ *ROLING GAGAL*: GAK ADA POSISI YG BISA DI TP"); last_roling_notif = True
     del positions; gc.collect(); return False
 
+# FITUR PENGAMAN RESTART DARI V29.15
 async def cek_pengaman_restart(price, positions):
     if not positions: return
     area_tertinggi = max(p['area'] for p in positions); area_terendah = min(p['area'] for p in positions)
@@ -176,16 +181,17 @@ async def cek_pengaman_restart(price, positions):
         area = get_area(price, last_grid)
         if not area_aktif(area, positions): await notif_status(f"🛡️ *PENGAMAN RESTART*: HARGA RENDAH. BUY 1X"); await satpam_buy(price, area, reason="RESTART-DIP")
 
+# SCOUT LOOP ANTI NYANGKUT V29.15
 async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     global last_grid, base_price_start, mode_flexible, is_executing
     try:
         if is_executing: return
-        is_executing = True
+        is_executing = True # KUNCI DI AWAL
         price = get_price()
         if price == 0: return
         positions = await get_positions()
         if not positions:
-            if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
+            if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY: # DELAY 30 MENIT
                 area = get_area(price, last_grid); await satpam_buy(price, area, reason="AUTO-START"); base_price_start = price
         else:
             area_tertinggi = max(p['area'] for p in positions)
@@ -204,13 +210,13 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
                     if not area_aktif(area, positions): await satpam_buy(price, area, reason="GRID")
         del positions
     except Exception as e: await notif_error("SCOUT_LOOP CRASH", str(e))
-    finally: is_executing = False; gc.collect()
+    finally: is_executing = False; gc.collect() # KUNCI DIBUKA
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
     price = get_price(); usdt = get_balance("USDT"); pos = await get_positions()
     mode_txt = "🟢 RUN" if not mode_flexible else "🔴 PAUSE"; qty = get_qty(price)
-    txt = f"*STATUS V29.16 STABIL*\n{mode_txt} | *Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}` | *Min:* `${MIN_NOTIONAL_ENV:.1f}`\n| *Posisi:* `{len(pos)}`"
+    txt = f"*STATUS V29.17 FINAL*\n{mode_txt} | *Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}` | *Min:* `${MIN_NOTIONAL_ENV:.1f}`\n| *Posisi:* `{len(pos)}`"
     if pos:
         txt += f"\n\n📍 *POSISI*\n"
         for p in pos: txt += f"BUY `${p['buy_price']:.2f}` -> TP `${p['buy_price'] + last_grid:.2f}`\n"
