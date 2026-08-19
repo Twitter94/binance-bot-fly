@@ -1,9 +1,10 @@
-import os, time, math, requests, logging, signal, asyncio
+import os, time, math, requests, logging, signal, asyncio, gc
 from binance.client import Client
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
+gc.enable() # BIKIN GC NYALA TERUS
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
@@ -20,7 +21,7 @@ SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800 # 30 menit
 MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10")) # DARI.ENV
 
-binance = Client(API_KEY, API_SECRET, {"timeout": 3})
+binance = Client(API_KEY, API_SECRET, {"timeout": 2}) # turunin timeout biar cepet lepas
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 last_grid = 0; base_price_start = 0; app = None
@@ -36,12 +37,13 @@ error_sudah_dikirim = set()
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
 
 def supa_req(m,u,**k):
-    try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=3,**k)
+    try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=2,**k)
     except: return None
 
 def get_positions():
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
-    return r.json() if r and r.status_code==200 else []
+    data = r.json() if r and r.status_code==200 else []
+    return data
 
 def area_aktif(area, positions): return any(p['area'] == area for p in positions)
 
@@ -111,6 +113,8 @@ async def sinkron_db_dengan_binance():
     if selisih > SELISIH_TOLERANSI:
         await notif_status(f"🔄 *SYNC*: DB `{total_qty_db:.8f}` vs BINANCE `{balance_coin:.8f}`. RESET DB")
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
+    del positions_db # HAPUS DARI RAM
+    gc.collect()
 
 async def satpam_buy(price, area, reason="GRID"):
     global is_executing, mode_flexible, last_kurang_notif, last_roling_notif
@@ -140,7 +144,9 @@ async def satpam_buy(price, area, reason="GRID"):
         mode_flexible = False
     except Exception as e:
         await notif_error("BUY GAGAL", str(e))
-    finally: is_executing = False
+    finally: 
+        is_executing = False
+        gc.collect() # KOSONGIN RAM
 
 async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
     global is_executing, last_kurang_notif, last_roling_notif
@@ -165,7 +171,10 @@ async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
             last_roling_notif = False
     except Exception as e:
         await notif_error("SELL GAGAL", str(e))
-    finally: is_executing = False
+    finally: 
+        is_executing = False
+        del positions_in_area # HAPUS DARI RAM
+        gc.collect()
 
 async def satpam_sell_instansemua(all_positions, price):
     global is_executing
@@ -191,7 +200,10 @@ async def satpam_sell_instansemua(all_positions, price):
 
     except Exception as e:
         await notif_error("SELL INSTAN GAGAL", str(e))
-    finally: is_executing = False
+    finally: 
+        is_executing = False
+        del all_positions # HAPUS DARI RAM
+        gc.collect()
 
 async def cek_dana_dan_jual(usdt_need, price):
     global last_kurang_notif, last_roling_notif
@@ -214,11 +226,15 @@ async def cek_dana_dan_jual(usdt_need, price):
             await asyncio.sleep(2)
             if get_balance("USDT") >= usdt_need:
                 await notif_event(f"✅ *ROLING SUKSES*. LANJUT BUY")
+                del positions # HAPUS DARI RAM
+                gc.collect()
                 return True
 
     if not last_roling_notif:
         await notif_status(f"⚠️ *ROLING GAGAL*: GAK ADA POSISI YG BISA DI TP")
         last_roling_notif = True
+    del positions # HAPUS DARI RAM
+    gc.collect()
     return False
 
 async def cek_pengaman_restart(price, positions):
@@ -242,11 +258,16 @@ async def cek_pengaman_restart(price, positions):
 
 async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     global last_grid, base_price_start, mode_flexible
-    if is_executing: return
+    if is_executing: 
+        gc.collect()
+        return
 
     price = get_price()
-    if price == 0: return
-    positions = get_positions()
+    if price == 0: 
+        gc.collect()
+        return
+        
+    positions = get_positions() # AMBIL DARI SUPABASE
 
     if not positions:
         sudah_30_menit = (time.time() - bot_start_time) >= DELAY_FIRST_BUY
@@ -254,30 +275,31 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
             area = get_area(price, last_grid)
             await satpam_buy(price, area, reason="AUTO-START")
             base_price_start = price
-        return
+    else:
+        area_tertinggi = max(p['area'] for p in positions)
+        if price >= area_tertinggi + last_grid:
+            await satpam_sell_instansemua(positions, price)
+        else:
+            for area in set(p['area'] for p in positions):
+                pos_in_area = get_pos_by_area(area, positions)
+                buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
+                if price >= buy_terendah_area + last_grid:
+                    area_atas = get_area(price + last_grid, last_grid)
+                    if area_aktif(area_atas, positions):
+                        await satpam_sell_area(area, pos_in_area, price, mode="BIASA")
+                    else:
+                        await satpam_sell_area(area, pos_in_area, price, mode="REENTRY")
+                        await satpam_buy(price, get_area(price, last_grid), reason="RE-ENTRY")
+                    break
 
-    area_tertinggi = max(p['area'] for p in positions)
-    if price >= area_tertinggi + last_grid:
-        await satpam_sell_instansemua(positions, price)
-        return
-
-    for area in set(p['area'] for p in positions):
-        pos_in_area = get_pos_by_area(area, positions)
-        buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
-        if price >= buy_terendah_area + last_grid:
-            area_atas = get_area(price + last_grid, last_grid)
-            if area_aktif(area_atas, positions):
-                await satpam_sell_area(area, pos_in_area, price, mode="BIASA")
-            else:
-                await satpam_sell_area(area, pos_in_area, price, mode="REENTRY")
-                await satpam_buy(price, get_area(price, last_grid), reason="RE-ENTRY")
-            return
-
-    buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
-    if price <= buy_trigger:
-        area = get_area(price, last_grid)
-        if not area_aktif(area, positions):
-            await satpam_buy(price, area, reason="GRID")
+            buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
+            if price <= buy_trigger:
+                area = get_area(price, last_grid)
+                if not area_aktif(area, positions):
+                    await satpam_buy(price, area, reason="GRID")
+    
+    del positions # HAPUS DARI RAM SETELAH SELESAI CEK
+    gc.collect()
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
@@ -287,7 +309,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lot_val = price * get_qty(price)
     min_notional = MIN_NOTIONAL_ENV
 
-    txt = f"*STATUS V29.6 ANTI SPAM*\n"
+    txt = f"*STATUS V29.7 STATELESS 1S*\n"
     txt += f"{mode_txt} | *Harga:* `${price:.2f}`\n"
     txt += f"*SALDO:* `${usdt:.4f}`\n"
     txt += f"*GRID:* `${last_grid:.2f}` | *LOT:* `${lot_val:.2f}` | *Min:* `${min_notional:.1f}`\n"
@@ -298,6 +320,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for p in pos:
             tp_price = p['buy_price'] + last_grid
             txt += f"BUY `${p['buy_price']:.2f}` -> TP `${tp_price:.2f}`\n"
+
+    del pos # HAPUS DARI RAM
+    gc.collect()
 
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
@@ -310,12 +335,14 @@ async def main():
     await sinkron_db_dengan_binance()
     db = get_positions(); last_grid = get_atr_grid(); base_price_start = get_price()
     if len(db) > 0: mode_flexible = False
+    del db # HAPUS DARI RAM
+    gc.collect()
 
     await cek_pengaman_restart(base_price_start, db)
 
-    app.job_queue.run_repeating(scout_loop, interval=1, first=5)
+    app.job_queue.run_repeating(scout_loop, interval=1, first=5) # CEK 1 DETIK
     await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
-    logging.info("BOT V29.6 JALAN...")
+    logging.info("BOT V29.7 STATELESS 1 DETIK JALAN...")
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
     await stop.wait(); await app.stop(); await app.shutdown()
