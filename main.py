@@ -7,6 +7,7 @@ import asyncio
 import gc
 import signal
 import httpx
+import requests
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -311,43 +312,51 @@ async def cek_pengaman_restart(price, positions):
             await satpam_buy(price, area, reason="RESTART-DIP")
 
 async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
-    global last_grid, base_price_start, mode_flexible
-    if is_executing:
-        gc.collect()
-        return
-    price = await get_price()
-    if price == 0:
-        gc.collect()
-        return
-    positions = await get_positions()
-    if not positions:
-        if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
-            area = get_area(price, last_grid)
-            await satpam_buy(price, area, reason="AUTO-START")
-            base_price_start = price
-    else:
-        area_tertinggi = max(p['area'] for p in positions)
-        if price >= area_tertinggi + last_grid:
-            await satpam_sell_instansemua(positions, price)
-        else:
-            for area in set(p['area'] for p in positions):
-                pos_in_area = get_pos_by_area(area, positions)
-                buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
-                if price >= buy_terendah_area + last_grid:
-                    area_atas = get_area(price + last_grid, last_grid)
-                    if area_aktif(area_atas, positions):
-                        await satpam_sell_area(area, pos_in_area, price, mode="BIASA")
-                    else:
-                        await satpam_sell_area(area, pos_in_area, price, mode="REENTRY")
-                        await satpam_buy(price, get_area(price, last_grid), reason="RE-ENTRY")
-                    break
-            buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
-            if price <= buy_trigger:
+    global last_grid, base_price_start, mode_flexible, is_executing
+    try: # KUNCI FIX: TRY
+        if is_executing:
+            return
+
+        is_executing = True # KUNCI DARI AWAL
+
+        price = await get_price()
+        if price == 0:
+            return
+
+        positions = await get_positions()
+        if not positions:
+            if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
                 area = get_area(price, last_grid)
-                if not area_aktif(area, positions):
-                    await satpam_buy(price, area, reason="GRID")
-    del positions
-    gc.collect()
+                await satpam_buy(price, area, reason="AUTO-START")
+                base_price_start = price
+        else:
+            area_tertinggi = max(p['area'] for p in positions)
+            if price >= area_tertinggi + last_grid:
+                await satpam_sell_instansemua(positions, price)
+            else:
+                for area in set(p['area'] for p in positions):
+                    pos_in_area = get_pos_by_area(area, positions)
+                    buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
+                    if price >= buy_terendah_area + last_grid:
+                        area_atas = get_area(price + last_grid, last_grid)
+                        if area_aktif(area_atas, positions):
+                            await satpam_sell_area(area, pos_in_area, price, mode="BIASA")
+                        else:
+                            await satpam_sell_area(area, pos_in_area, price, mode="REENTRY")
+                            await satpam_buy(price, get_area(price, last_grid), reason="RE-ENTRY")
+                        break
+                buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
+                if price <= buy_trigger:
+                    area = get_area(price, last_grid)
+                    if not area_aktif(area, positions):
+                        await satpam_buy(price, area, reason="GRID")
+        del positions
+
+    except Exception as e:
+        await notif_error("SCOUT_LOOP CRASH", str(e))
+    finally: # KUNCI FIX: SELALU DI BUKA
+        is_executing = False
+        gc.collect()
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
@@ -356,7 +365,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pos = await get_positions()
     mode_txt = "🟢 RUN" if not mode_flexible else "🔴 PAUSE"
     qty = await get_qty(price)
-    txt = f"*STATUS V29.14 ASYNC*\n{mode_txt} | *Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}` | *Min:* `${MIN_NOTIONAL_ENV:.1f}`\n| *Posisi:* `{len(pos)}`"
+    txt = f"*STATUS V29.15 ANTI NYANGKUT*\n{mode_txt} | *Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}` | *Min:* `${MIN_NOTIONAL_ENV:.1f}`\n| *Posisi:* `{len(pos)}`"
     if pos:
         txt += f"\n\n📍 *POSISI*\n"
         for p in pos:
