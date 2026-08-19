@@ -1,13 +1,23 @@
+# fly.toml app configuration file generated for bahaya on 2026-08-19T17:08:55Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
 app = "bahaya"
-primary_region = "sin"
+primary_region = 'sin'
 
 [build]
   dockerfile = "Dockerfile"
 
 [[vm]]
-  memory = "256mb" # INI KUNCINYA. DARI 512 JADI 256
-  cpu_kind = "shared"
-  cpus = 1 # 1 cpu shared
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
 
 [processes]
-  app = "python main.py"
+  app = ''
+
+[[restart]]
+  policy = 'always'
+  processes = ['app']
+  retries = 10
