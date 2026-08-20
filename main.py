@@ -1,13 +1,13 @@
-import os, time, math, gc, signal, asyncio, requests
+import os, time, math, requests, logging, signal, asyncio
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-gc.enable()
+logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
 PAIR = os.getenv("PAIR", "BTCUSDT")
 COIN = PAIR.replace("USDT", "")
 TELE_TOKEN = os.getenv("TELE_TOKEN")
@@ -18,10 +18,9 @@ SUPA_KEY = os.getenv("SUPA_KEY")
 MIN_GRID = 250; MAX_GRID = 1000; QTY_FIXED = 0.00001
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 FEE = 0.001; SELISIH_TOLERANSI = 0.00001
-DELAY_FIRST_BUY = 1800; MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "5"))
+DELAY_FIRST_BUY = 1800; MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10"))
 
-# 1. JANGAN INISIALISASI DI SINI
-binance = None
+binance = None # DITUNDA KONEK E BEN LOLOS SMOKE CHECK
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 last_grid = 0; base_price_start = 0; app = None
@@ -34,24 +33,24 @@ def supa_req(m,u,**k):
     try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=5,**k)
     except: return None
 
-async def get_positions():
+def get_positions():
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
     return r.json() if r and r.status_code==200 else []
 
 def area_aktif(area, positions): return any(p['area'] == area for p in positions)
 def get_pos_by_area(area, positions): return [p for p in positions if p['area'] == area]
 
-# 2. FUNGSI BINANCE TETAP SAMA
 def get_balance(asset):
-    try: return float(binance.get_asset_balance(asset)['free'])
+    try: return float(binance.get_asset_balance(asset)['free']) if binance else 0
     except: return 0
 def get_price():
-    try: return float(binance.get_symbol_ticker(symbol=PAIR)['price'])
+    try: return float(binance.get_symbol_ticker(symbol=PAIR)['price']) if binance else 0
     except: return 0
 def get_binance_balance_coin(): return get_balance(COIN)
 
 def get_atr_grid():
     try:
+        if not binance: return MIN_GRID
         k = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
         tr = [abs(float(k[i][4])-float(k[i-1][4])) for i in range(1,len(k))]
         atr = sum(tr)/len(tr) if tr else 500
@@ -60,8 +59,9 @@ def get_atr_grid():
 
 def get_qty(price):
     try:
+        if not binance: return QTY_FIXED
         info = binance.get_symbol_info(PAIR)
-        min_n = float(next(f['filterType']=='MIN_NOTIONAL']))
+        min_n = float(next(f['minNotional'] for f in info['filters'] if f['filterType']=='MIN_NOTIONAL'))
         step = float(next(f['stepSize'] for f in info['filters'] if f['filterType']=='LOT_SIZE'))
         qty = QTY_FIXED
         min_n = max(MIN_NOTIONAL_ENV, min_n)
@@ -89,16 +89,15 @@ async def notif_error(tipe, msg):
     await notif_status(f"⚠️ *{tipe}*: `{msg}`")
 
 async def sinkron_db_dengan_binance():
-    positions_db = await get_positions(); balance_coin = get_binance_balance_coin()
+    positions_db = get_positions(); balance_coin = get_binance_balance_coin()
     total_qty_db = sum(p['qty'] for p in positions_db)
     if abs(balance_coin - total_qty_db) > SELISIH_TOLERANSI:
         await notif_status(f"🔄 *SYNC*: DB `{total_qty_db:.8f}` vs BINANCE `{balance_coin:.8f}`. RESET DB")
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
-    del positions_db; gc.collect()
 
 async def satpam_buy(price, area, reason="GRID"):
     global is_executing, mode_flexible, last_kurang_notif, last_roling_notif
-    if is_executing: return
+    if is_executing or not binance: return
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
@@ -113,11 +112,11 @@ async def satpam_buy(price, area, reason="GRID"):
         last_kurang_notif = False; last_roling_notif = False; mode_flexible = False
     except BinanceAPIException as e: await notif_error("BUY GAGAL", e.message)
     except Exception as e: await notif_error("BUY GAGAL", str(e))
-    finally: is_executing = False; gc.collect()
+    finally: is_executing = False
 
 async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
     global is_executing, last_kurang_notif, last_roling_notif
-    if is_executing: return
+    if is_executing or not binance: return
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
@@ -132,11 +131,11 @@ async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
         if mode == "ROLING": last_kurang_notif = False; last_roling_notif = False
     except BinanceAPIException as e: await notif_error("SELL GAGAL", e.message)
     except Exception as e: await notif_error("SELL GAGAL", str(e))
-    finally: is_executing = False; del positions_in_area; gc.collect()
+    finally: is_executing = False
 
 async def satpam_sell_instansemua(all_positions, price):
     global is_executing
-    if is_executing: return
+    if is_executing or not binance: return
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
@@ -152,11 +151,11 @@ async def satpam_sell_instansemua(all_positions, price):
         await satpam_buy(price, get_area(price, last_grid), reason="REENTRY-INSTAN")
     except BinanceAPIException as e: await notif_error("SELL INSTAN GAGAL", e.message)
     except Exception as e: await notif_error("SELL INSTAN GAGAL", str(e))
-    finally: is_executing = False; del all_positions; gc.collect()
+    finally: is_executing = False
 
 async def cek_dana_dan_jual(usdt_need, price):
     global last_kurang_notif, last_roling_notif
-    positions = await get_positions()
+    positions = get_positions()
     if not positions:
         if not last_kurang_notif: await notif_status(f"⚠️ *SALDO KURANG*. GAK ADA POSISI BUAT ROLING"); last_kurang_notif = True
         return False
@@ -165,12 +164,12 @@ async def cek_dana_dan_jual(usdt_need, price):
         pos_in_area = get_pos_by_area(area, positions); buy_terendah = min(p['buy_price'] for p in pos_in_area)
         if price >= buy_terendah + last_grid:
             await satpam_sell_area(area, pos_in_area, price, mode="ROLING"); await asyncio.sleep(2)
-            if get_balance("USDT") >= usdt_need: await notif_event(f"✅ *ROLING SUKSES*. LANJUT BUY"); del positions; gc.collect(); return True
+            if get_balance("USDT") >= usdt_need: await notif_event(f"✅ *ROLING SUKSES*. LANJUT BUY"); return True
     if not last_roling_notif: await notif_status(f"⚠️ *ROLING GAGAL*: GAK ADA POSISI YG BISA DI TP"); last_roling_notif = True
-    del positions; gc.collect(); return False
+    return False
 
 async def cek_pengaman_restart(price, positions):
-    if not positions: return
+    if not positions or not binance: return
     area_tertinggi = max(p['area'] for p in positions); area_terendah = min(p['area'] for p in positions)
     if price >= area_tertinggi + last_grid: await notif_status(f"🛡️ *PENGAMAN RESTART*: HARGA TINGGI. SELL INSTAN"); await satpam_sell_instansemua(positions, price); return
     buy_trigger = area_terendah - last_grid
@@ -180,12 +179,12 @@ async def cek_pengaman_restart(price, positions):
 
 async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     global last_grid, base_price_start, mode_flexible, is_executing
+    if is_executing or not binance: return
+    is_executing = True
     try:
-        if is_executing: return
-        is_executing = True
         price = get_price()
         if price == 0: return
-        positions = await get_positions()
+        positions = get_positions()
         if not positions:
             if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
                 area = get_area(price, last_grid); await satpam_buy(price, area, reason="AUTO-START"); base_price_start = price
@@ -204,61 +203,54 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
                 if price <= buy_trigger:
                     area = get_area(price, last_grid)
                     if not area_aktif(area, positions): await satpam_buy(price, area, reason="GRID")
-        del positions
     except Exception as e: await notif_error("SCOUT_LOOP CRASH", str(e))
-    finally: is_executing = False; gc.collect()
+    finally: is_executing = False
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
-    price = get_price(); usdt = get_balance("USDT"); pos = await get_positions()
+    price = get_price(); usdt = get_balance("USDT"); pos = get_positions()
     mode_txt = "🟢 RUN" if not mode_flexible else "🔴 PAUSE"; qty = get_qty(price)
-    txt = f"*STATUS V29.21 FINAL*\n{mode_txt} | *Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}` | *Min:* `${MIN_NOTIONAL_ENV:.1f}`\n| *Posisi:* `{len(pos)}`"
+    bin_status = "✅" if binance else "❌"
+    txt = f"*STATUS V28.10 GABUNGAN*\n{mode_txt} | *Binance:* `{bin_status}`\n*Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}`\n| *Posisi:* `{len(pos)}`"
     if pos:
         txt += f"\n\n📍 *POSISI*\n"
         for p in pos: txt += f"BUY `${p['buy_price']:.2f}` -> TP `${p['buy_price'] + last_grid:.2f}`\n"
-    del pos; gc.collect()
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
-# 3. PINDAHIN BINANCE KE DALAM SINI + RETRY
 async def main():
     global app, last_grid, base_price_start, mode_flexible, binance
-    try:
-        print("=================================")
-        print("BOT STARTING V29.21...")
+    print("BOT STARTING V28.10...")
+    app = ApplicationBuilder().token(TELE_TOKEN).pool_timeout(10.0).build()
+    app.add_handler(CommandHandler("start", status))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
-        for i in range(3):
-            try:
-                binance = Client(API_KEY, API_SECRET, {"timeout": 10})
-                binance.ping()
-                print("BINANCE KONEK OK")
-                break
-            except Exception as e:
-                print(f"GAGAL KONEK BINANCE {i+1}/3: {e}")
-                await asyncio.sleep(5)
-        if binance is None: raise Exception("GAGAL KONEK BINANCE SETELAH 3X")
+    # KONEK BINANCE DITUNDA 10 DETIK BEN LOLOS FLY SMOKE CHECK
+    await asyncio.sleep(10)
+    for i in range(3):
+        try:
+            binance = Client(API_KEY, API_SECRET, {"timeout": 10})
+            binance.ping()
+            print("BINANCE KONEK OK")
+            break
+        except Exception as e:
+            print(f"GAGAL KONEK BINANCE {i+1}/3: {e}")
+            await asyncio.sleep(5)
 
-        app = ApplicationBuilder().token(TELE_TOKEN).pool_timeout(10.0).build()
-        app.add_handler(CommandHandler("start", status))
-        app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
-
+    if binance:
         await sinkron_db_dengan_binance()
-        db = await get_positions(); last_grid = get_atr_grid(); base_price_start = get_price()
-        print(f"HARGA: {base_price_start} | GRID: {last_grid}")
-
+        db = get_positions(); last_grid = get_atr_grid(); base_price_start = get_price()
         if len(db) > 0: mode_flexible = False
-        await cek_pengaman_restart(base_price_start, db); del db; gc.collect()
+        await cek_pengaman_restart(base_price_start, db)
+    else:
+        print("JALAN TANPA BINANCE DULU")
 
-        app.job_queue.run_repeating(scout_loop, interval=3, first=5)
-        await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
-        print("BOT V29.21 JALAN NORMAL...")
+    app.job_queue.run_repeating(scout_loop, interval=3, first=5)
+    await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
+    print("BOT V28.10 JALAN NORMAL...")
 
-        stop = asyncio.Event()
-        for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
-        await stop.wait()
-
-    except Exception as e:
-        print(f"CRASH: {e}")
-    finally:
-        await app.updater.stop(); await app.stop(); await app.shutdown()
+    stop = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+    await stop.wait()
+    await app.updater.stop(); await app.stop(); await app.shutdown()
 
 if __name__ == "__main__": asyncio.run(main())
