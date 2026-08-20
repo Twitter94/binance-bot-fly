@@ -4,7 +4,7 @@ from binance.exceptions import BinanceAPIException
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
@@ -20,18 +20,20 @@ ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 FEE = 0.001; SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800; MIN_NOTIONAL_ENV = float(os.getenv("MIN_NOTIONAL", "10"))
 
-binance = None # DITUNDA KONEK E BEN LOLOS SMOKE CHECK
+binance = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 last_grid = 0; base_price_start = 0; app = None
 is_executing = False; mode_flexible = True; last_status_msg = ""
 bot_start_time = time.time(); last_kurang_notif = False; last_roling_notif = False
-error_sudah_dikirim = set()
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
+
 def supa_req(m,u,**k):
-    try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=5,**k)
-    except: return None
+    try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=10,**k)
+    except Exception as e:
+        logging.error(f"SUPA ERROR: {e}")
+        return None
 
 def get_positions():
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
@@ -74,19 +76,18 @@ KEYBOARD = ReplyKeyboardMarkup([[KeyboardButton("STATUS")]], resize_keyboard=Tru
 async def safe_send(chat_id, msg):
     try:
         if app: await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-    except: pass
+    except Exception as e: logging.error(f"TELE ERROR: {e}")
+
 async def notif_event(msg):
     if TELE_CHAT_ID: await safe_send(TELE_CHAT_ID, msg)
+
 async def notif_status(msg):
     global last_status_msg
     if not TELE_CHAT_ID or msg == last_status_msg: return
     await safe_send(TELE_CHAT_ID, msg); last_status_msg = msg
+
 async def notif_error(tipe, msg):
-    global error_sudah_dikirim
-    key = f"{tipe}: {msg}"
-    if key in error_sudah_dikirim: return
-    error_sudah_dikirim.add(key)
-    await notif_status(f"⚠️ *{tipe}*: `{msg}`")
+    await notif_status(f"⚠️ *{tipe}*: `{msg}`") # HAPUS error_sudah_dikirim BEN RA NGUMPUL NENG RAM
 
 async def sinkron_db_dengan_binance():
     positions_db = get_positions(); balance_coin = get_binance_balance_coin()
@@ -211,7 +212,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price(); usdt = get_balance("USDT"); pos = get_positions()
     mode_txt = "🟢 RUN" if not mode_flexible else "🔴 PAUSE"; qty = get_qty(price)
     bin_status = "✅" if binance else "❌"
-    txt = f"*STATUS V28.10 GABUNGAN*\n{mode_txt} | *Binance:* `{bin_status}`\n*Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}`\n| *Posisi:* `{len(pos)}`"
+    txt = f"*STATUS V28.11 STABIL*\n{mode_txt} | *Binance:* `{bin_status}`\n*Harga:* `${price:.2f}`\n*SALDO:* `${usdt:.4f}`\n*GRID:* `${last_grid:.2f}` | *LOT:* `${price * qty:.2f}`\n| *Posisi:* `{len(pos)}`"
     if pos:
         txt += f"\n\n📍 *POSISI*\n"
         for p in pos: txt += f"BUY `${p['buy_price']:.2f}` -> TP `${p['buy_price'] + last_grid:.2f}`\n"
@@ -219,34 +220,28 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     global app, last_grid, base_price_start, mode_flexible, binance
-    print("BOT STARTING V28.10...")
+    logging.info("BOT STARTING V28.11...")
     app = ApplicationBuilder().token(TELE_TOKEN).pool_timeout(10.0).build()
     app.add_handler(CommandHandler("start", status))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
-    # KONEK BINANCE DITUNDA 10 DETIK BEN LOLOS FLY SMOKE CHECK
-    await asyncio.sleep(10)
-    for i in range(3):
-        try:
-            binance = Client(API_KEY, API_SECRET, {"timeout": 10})
-            binance.ping()
-            print("BINANCE KONEK OK")
-            break
-        except Exception as e:
-            print(f"GAGAL KONEK BINANCE {i+1}/3: {e}")
-            await asyncio.sleep(5)
+    await asyncio.sleep(10) # BEN LOLOS SMOKE CHECK
+    try:
+        binance = Client(API_KEY, API_SECRET, {"timeout": 10})
+        binance.ping()
+        logging.info("BINANCE KONEK OK")
+    except Exception as e:
+        logging.error(f"GAGAL KONEK BINANCE: {e}")
 
     if binance:
         await sinkron_db_dengan_binance()
         db = get_positions(); last_grid = get_atr_grid(); base_price_start = get_price()
         if len(db) > 0: mode_flexible = False
         await cek_pengaman_restart(base_price_start, db)
-    else:
-        print("JALAN TANPA BINANCE DULU")
 
     app.job_queue.run_repeating(scout_loop, interval=3, first=5)
     await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
-    print("BOT V28.10 JALAN NORMAL...")
+    logging.info("BOT V28.11 JALAN NORMAL...")
 
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
