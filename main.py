@@ -23,18 +23,19 @@ SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}"}
 
 last_grid = 0; app = None
 bot_start_time = time.time()
-sedang_kerja = False # KUNCI ANTI TABRAKAN
+sedang_kerja = False 
+mode_siaga = True
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
 
 def supa_req(m,u,**k):
     try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=5,**k)
-    finally: gc.collect() # HAPUS MEMORI LANGSUNG HABIS REQUEST
+    finally: gc.collect()
 
 def get_positions():
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
     data = r.json() if r and r.status_code==200 else []
-    return data # DATA LANGSUNG DI BALIKIN, GA DISIMPEN LAMA
+    return data
 
 def get_price():
     try: return float(binance.get_symbol_ticker(symbol=PAIR)['price']) if binance else 0
@@ -50,6 +51,14 @@ def get_qty(price):
         return round(qty, 8)
     except: return QTY_FIXED
 
+# HANYA 1 TOMBOL STATUS
+KEYBOARD = ReplyKeyboardMarkup([[KeyboardButton("STATUS")]], resize_keyboard=True, one_time_keyboard=False)
+
+async def kirim_notif(msg):
+    if TELE_CHAT_ID and app:
+        try: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown", reply_markup=KEYBOARD)
+        except: pass
+
 async def eksekusi_buy(price, area):
     global sedang_kerja
     sedang_kerja = True
@@ -60,10 +69,12 @@ async def eksekusi_buy(price, area):
         if order['status']== 'FILLED':
             supa_req("POST", f"{SUPA_URL}/rest/v1/positions", json={"pair": PAIR, "area": area, "buy_price": price, "qty": qty})
             await kirim_notif(f"🟢 BUY SUKSES")
+            global mode_siaga
+            mode_siaga = False
     except Exception as e: await kirim_notif(f"⚠️ BUY GAGAL: `{e}`")
     finally: 
         sedang_kerja = False
-        gc.collect() # HAPUS MEMORI HABIS KERJA
+        gc.collect()
 
 async def eksekusi_sell(posisi, price):
     global sedang_kerja
@@ -78,51 +89,64 @@ async def eksekusi_sell(posisi, price):
     except Exception as e: await kirim_notif(f"⚠️ SELL GAGAL: `{e}`")
     finally:
         sedang_kerja = False
-        gc.collect() # HAPUS MEMORI HABIS KERJA
+        gc.collect()
 
-async def kirim_notif(msg):
-    if TELE_CHAT_ID and app:
-        try: await app.bot.send_message(chat_id=TELE_CHAT_ID, text=msg, parse_mode="Markdown")
-        except: pass
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    harga = get_price()
+    posisi = get_positions()
+    mode_txt = "🟢 RUN" if not mode_siaga else "🔴 PAUSE"
+    
+    txt = f"*STATUS V28.15 LIHAT-HAPUS*\n"
+    txt += f"{mode_txt}\n"
+    txt += f"*Harga:* `${harga:.2f}`\n"
+    txt += f"*GRID:* `${last_grid:.2f}`\n"
+    txt += f"*Posisi:* `{len(posisi)}`"
+    
+    if posisi:
+        txt += f"\n\n📍 *POSISI*\n"
+        for p in posisi: 
+            tp = p['buy_price'] + last_grid
+            txt += f"BUY `${p['buy_price']:.2f}` -> TP `${tp:.2f}`\n"
+    
+    await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
 async def loop_pemantau(context: ContextTypes.DEFAULT_TYPE):
     global last_grid, sedang_kerja
-    if sedang_kerja: return # KALAU LAGI KERJA, SKIP. JANGAN NUMPUK
+    if sedang_kerja: return 
     
-    # 1. LIHAT -> AMBIL DATA
     harga = get_price()
     if harga == 0: return
     posisi = get_positions()
     
-    # 2. CEK MOMEN -> KALAU GAK ADA LANGSUNG HAPUS DENGAN KELUAR
-    ada_momen = False
     if not posisi:
         if (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
             area = get_area(harga, last_grid)
-            ada_momen = True
-            asyncio.create_task(eksekusi_buy(harga, area)) # PANGGIL TAPI JANGAN DITUNGGU
+            asyncio.create_task(eksekusi_buy(harga, area))
     else:
         area_tertinggi = max(p['area'] for p in posisi)
         if harga >= area_tertinggi + last_grid:
-            ada_momen = True
-            asyncio.create_task(eksekusi_sell(posisi, harga)) # PANGGIL TAPI JANGAN DITUNGGU
+            asyncio.create_task(eksekusi_sell(posisi, harga))
             
-    # 3. SELESAI. VARIABEL `posisi` DAN `harga` LANGSUNG DIBUANG DARI RAM
     del posisi
-    gc.collect() # PAKSA HAPUS SAMPAH
+    gc.collect()
 
 async def main():
     global app, last_grid, binance
-    logging.info("BOT V28.13 LIHAT-HAPUS MULAI...")
+    logging.info("BOT V28.15 LIHAT-HAPUS MULAI...")
     app = ApplicationBuilder().token(TELE_TOKEN).build()
-    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("Bot Jalan")))
+    
+    # HAPUS START, CUMA DAFTAR STATUS
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
     await asyncio.sleep(10)
     binance = Client(API_KEY, API_SECRET, {"timeout": 5})
     last_grid = 500
     
-    app.job_queue.run_repeating(loop_pemantau, interval=3, first=5) # BALIK KE 3 DETIK
+    app.job_queue.run_repeating(loop_pemantau, interval=3, first=5)
     await app.initialize(); await app.start(); await app.updater.start_polling()
+    
+    # KIRIM PESAN AWAL + TOMBOL STATUS
+    await kirim_notif("✅ *BOT SIAP LIHAT-HAPUS* \nInterval 3 detik. Pencet STATUS untuk cek")
     
     logging.info("BOT SIAP LIHAT-HAPUS...")
     stop = asyncio.Event()
