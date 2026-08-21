@@ -2,7 +2,6 @@ import os, time, math, requests, logging, signal, asyncio, gc
 from binance.client import Client
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-# HAPUS HTTPXRequest
 
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
@@ -28,7 +27,6 @@ is_executing = False; mode_flexible = True
 last_status_msg = ""
 bot_start_time = time.time()
 
-# CACHE GLOBAL
 last_fee_check = 0; cached_taker_fee = 0.001
 cached_price = 0; cached_price_time = 0
 cached_positions = []; cached_pos_time = 0
@@ -272,18 +270,17 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
     price = get_price_cache(); usdt = get_balance("USDT"); pos = get_positions_cache()
     mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
-    txt = f"*BOT V29.16 AIOHTTP*\n*Mode:* `{mode}`\n*Harga:* `${price:,.2f}` | *GRID:* `${last_grid:,.2f}`\n*Saldo:* `{usdt:.2f}` | *Posisi:* `{len(pos)}`"
+    txt = f"*BOT V29.17 FINAL*\n*Mode:* `{mode}`\n*Harga:* `${price:,.2f}` | *GRID:* `${last_grid:,.2f}`\n*Saldo:* `{usdt:.2f}` | *Posisi:* `{len(pos)}`"
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
 async def main():
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V29.16 START...")
+            logging.info("BOT V29.17 START...")
             await asyncio.sleep(15)
 
-            # FIX: KEMBALI KE DEFAULT AIOHTTP. JANGAN PAKE HTTPXREQUEST
-            app = ApplicationBuilder().token(TELE_TOKEN).build()
+            app = ApplicationBuilder().token(TELE_TOKEN).build() # PTB 20.3 OTOMATIS PAKE AIOHTTP
             
             app.add_handler(CommandHandler("start", status))
             app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
@@ -297,11 +294,11 @@ async def main():
 
             await cek_pengaman_restart(base_price_start, db)
 
-            app.job_queue.run_repeating(scout_loop, interval=3, first=5)
+            app.job_queue.run_repeating(scout_loop, interval=3, first=5) # INI UDAH ADA KARENA [job-queue]
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-            await notif_status("✅ *BOT V29.16 AIOHTTP JALAN*")
-            logging.info("BOT V29.16 JALAN...")
+            await notif_status("✅ *BOT V29.17 FINAL JALAN*")
+            logging.info("BOT V29.17 JALAN...")
 
             stop = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
