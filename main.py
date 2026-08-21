@@ -28,7 +28,7 @@ is_executing = False; mode_flexible = True
 last_status_msg = ""
 bot_start_time = time.time()
 
-last_fee_check = 0; cached_taker_fee = 0.0011 # default 0.11%
+last_fee_check = 0; cached_taker_fee = 0.0011
 cached_price = 0; cached_price_time = 0
 cached_positions = []; cached_pos_time = 0
 cached_atr_grid = 500
@@ -39,6 +39,10 @@ def supa_req(m,u,**k):
     except: return None
 
 def get_positions():
+    r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
+    return r.json() if r and r.status_code==200 else []
+
+def get_positions_full(): # BUAT STATUS BIAR NAMPILIN SEMUA
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
     return r.json() if r and r.status_code==200 else []
 
@@ -95,7 +99,7 @@ def get_fee_binance(): # INI BUAT BUY/SELL BENERAN. LANGSUNG DARI BINANCE
         return 0.0011, cached_taker_fee
     try:
         info = binance.get_trade_fee(symbol=PAIR)
-        cached_taker_fee = float(info['tradeFee'][0]['taker']) / 10000 # Binance return 11 = 0.0011
+        cached_taker_fee = float(info['tradeFee'][0]['taker']) / 10000
         last_fee_check = time.time()
         return 0.0011, cached_taker_fee
     except:
@@ -125,14 +129,14 @@ async def sinkron_db_dengan_binance():
         await notif_status(f"SYNC: DB `{total_qty_db:.8f}` vs BINANCE `{balance_coin:.8f}`. RESET DB")
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
 
-async def satpam_buy(price, area, reason="GRID"): # PAKE FEE ASLI BINANCE
+async def satpam_buy(price, area, reason="GRID"):
     global is_executing, mode_flexible
     if is_executing: return
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
         qty = get_qty_aman(price)
-        _, taker_fee_asli = get_fee_binance() # AMBIL FEE BENERAN
+        _, taker_fee_asli = get_fee_binance()
         usdt_need = price * qty * (1 + taker_fee_asli + taker_fee_asli + BUFFER)
         await notif_event(f"🟢 BUY [{reason}] @`{price:.2f}` AREA `{area}` | QTY `{qty}` | Fee `{taker_fee_asli*100:.3f}%`")
         if get_balance("USDT") < usdt_need:
@@ -148,14 +152,14 @@ async def satpam_buy(price, area, reason="GRID"): # PAKE FEE ASLI BINANCE
         await notif_status(f"⚠️ BUY GAGAL: `{e}`")
     finally: is_executing = False
 
-async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"): # PAKE FEE ASLI BINANCE
+async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
     global is_executing
     if is_executing: return
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
         total_qty = sum(p['qty'] for p in positions_in_area)
-        _, taker_fee_asli = get_fee_binance() # AMBIL FEE BENERAN
+        _, taker_fee_asli = get_fee_binance()
         await notif_event(f"🔴 SELL [{mode}] AREA `{area}` @`{price:.2f}` | Fee `{taker_fee_asli*100:.3f}%`")
         order = binance.order_market_sell(symbol=PAIR, quantity=total_qty)
         if order['status']== 'FILLED':
@@ -255,43 +259,51 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     finally:
         gc.collect()
 
-# === STATUS HITUNGAN KASAR 0.11% + 0.11% ===
+# === STATUS FINAL: SEMUA POSISI + SALDO USDT ===
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await sinkron_db_dengan_binance()
-    price = cached_price
-    usdt = get_balance("USDT")
-    pos = cached_positions
-    mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
+    try:
+        price = cached_price
+        pos = get_positions_full() # AMBIL SEMUA DARI DB
+        mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
 
-    qty_kasar = get_qty_aman(price) # qty tetep akurat
-    modal_butuh_kasar = price * qty_kasar * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
+        usdt = get_balance("USDT") # CUMA SALDO USDT
 
-    posisi_txt = ""
-    if pos:
-        buy_list = sorted([p['buy_price'] for p in pos], reverse=True)
-        for b in buy_list:
-            s = b + last_grid
-            posisi_txt += f"`B{b:,.0f} - S{s:,.0f}`\n"
-    else:
-        posisi_txt = "`-`"
+        qty_kasar = get_qty_aman(price)
+        modal_butuh_kasar = price * qty_kasar * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
 
-    txt = (
-        f"*BOT V29.17.4*\n"
-        f"_Mode: {mode}_\n\n"
-        f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
-        f"*Modal Butuh:* `~{modal_butuh_kasar:.2f}` | *Saldo:* `{usdt:.2f}`\n"
-        f"_Fee Kasar: 0.11% + 0.11%_\n\n"
-        f"*POSISI:* `{len(pos)}`\n"
-        f"{posisi_txt}"
-    )
-    await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
+        posisi_txt = ""
+        if pos:
+            buy_list = sorted(pos, key=lambda x: x['buy_price'], reverse=True)
+            for p in buy_list:
+                b = p['buy_price']
+                s = b + last_grid
+                area = p['area']
+                qty = p['qty']
+                posisi_txt += f"`B{b:,.0f} - S{s:,.0f}` | A:`{area:,.0f}` | Q:`{qty}`\n"
+        else:
+            posisi_txt = "`- Belum ada posisi -`"
+
+        saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else "⚠️ KURANG"
+
+        txt = (
+            f"*BOT V29.17.9*\n"
+            f"_Mode: {mode}_\n\n"
+            f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
+            f"*Saldo USDT:* `{usdt:.2f}` {saldo_status}\n"
+            f"*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n"
+            f"*POSISI:* `{len(pos)}`\n"
+            f"{posisi_txt}"
+        )
+        await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Gagal ambil status: {e}")
 
 async def main():
     resource.setrlimit(resource.RLIMIT_AS, (200 * 1024 * 1024, 200 * 1024 * 1024))
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V29.17.4 START...")
+            logging.info("BOT V29.17.9 START...")
             await asyncio.sleep(15)
 
             app = ApplicationBuilder().token(TELE_TOKEN).build()
@@ -310,8 +322,8 @@ async def main():
             app.job_queue.run_repeating(scout_loop, interval=5, first=5)
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-            await notif_status("✅ *BOT V29.17.4 JALAN*")
-            logging.info("BOT V29.17.4 JALAN...")
+            await notif_status("✅ *BOT V29.17.9 JALAN*")
+            logging.info("BOT V29.17.9 JALAN...")
 
             stop = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
