@@ -5,8 +5,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+API_KEY = os.getenv("API_KEY") # UDAH DISESUAIKAN SAMA FLY SECRET
+API_SECRET = os.getenv("API_SECRET") # UDAH DISESUAIKAN SAMA FLY SECRET
 PAIR = os.getenv("PAIR", "BTC/USDT")
 PAIR_BINANCE = "BTCUSDT"
 TELE_TOKEN = os.getenv("TELE_TOKEN")
@@ -20,7 +20,7 @@ ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
 FEE_KASAR = 0.0011
-SCOUT_INTERVAL = 5 # GANTI JADI 5 DETIK. 3 DETIK MASIH BISA TAPI 5 LEBIH AMAN
+SCOUT_INTERVAL = 5
 
 binance = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -65,16 +65,20 @@ async def get_balance(asset):
     try:
         bal = await binance.fetch_balance()
         return float(bal[asset]['free'])
-    except: return 0
+    except Exception as e:
+        logging.error(f"GET BALANCE ERROR: {e}")
+        return 0
 
 async def get_price_cache():
     global cached_price, cached_price_time
     if time.time() - cached_price_time < 3:
         return cached_price
-    try: 
+    try:
         ticker = await binance.fetch_ticker(PAIR)
         cached_price = float(ticker['last'])
-    except: cached_price = 0
+    except Exception as e:
+        logging.error(f"GET PRICE ERROR: {e}")
+        cached_price = 0
     cached_price_time = time.time()
     return cached_price
 
@@ -234,7 +238,7 @@ async def cek_pengaman_restart(price, positions):
         if not area_aktif(area, positions):
             await satpam_buy(price, area, reason="RESTART-DIP")
 
-async def scout_loop(): # INI UDAH GAK PAKE CONTEXT LAGI
+async def scout_loop():
     global last_grid, base_price_start, mode_flexible
     while not stop_event.is_set():
         if not is_executing:
@@ -302,7 +306,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else "⚠️ KURANG"
 
         txt = (
-            f"*BOT V30.1.0 HEMAT*\n"
+            f"*BOT V30.1.1 FIX ENV*\n"
             f"_Mode: {mode} | Interval: {SCOUT_INTERVAL}s_\n\n"
             f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
             f"*Saldo USDT:* `{usdt:.2f}` {saldo_status}\n"
@@ -321,7 +325,7 @@ async def main():
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V30.1.0 HEMAT START...")
+            logging.info("BOT V30.1.1 FIX ENV START...")
             await asyncio.sleep(15)
 
             app = ApplicationBuilder().token(TELE_TOKEN).build()
@@ -341,12 +345,11 @@ async def main():
 
             await cek_pengaman_restart(base_price_start, db)
 
-            # JALANIN TELEGRAM + SCOUT BARengan TANPA JOBQUEUE
             scout_task = asyncio.create_task(scout_loop())
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
-            
-            await notif_status("✅ *BOT V30.1.0 HEMAT JALAN DI 256MB*")
-            logging.info("BOT V30.1.0 HEMAT JALAN...")
+
+            await notif_status("✅ *BOT V30.1.1 FIX ENV JALAN DI 256MB*")
+            logging.info("BOT V30.1.1 FIX ENV JALAN...")
 
             await stop_event.wait()
             scout_task.cancel()
