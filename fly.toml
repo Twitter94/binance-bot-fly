@@ -1,13 +1,8 @@
 app = "bahaya"
 primary_region = "sin"
 
-[build]
-  dockerfile = "Dockerfile"
-
-[[vm]]
-  memory = "256mb" # INI KUNCINYA. DARI 512 JADI 256
-  cpu_kind = "shared"
-  cpus = 1 # 1 cpu shared
-
-[processes]
-  app = "python main.py"
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  min_machines_running = 1
