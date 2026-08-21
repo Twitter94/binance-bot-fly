@@ -19,8 +19,8 @@ MIN_USDT = 5
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
-FEE_KASAR = 0.0011 # BUAT STATUS DOANG
-SCOUT_INTERVAL = 3 # UDAH DIGANTI JADI 3 DETIK
+FEE_KASAR = 0.0011
+SCOUT_INTERVAL = 3
 
 binance_scout = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -34,10 +34,8 @@ stop_event = asyncio.Event()
 cached_positions = []; cached_pos_time = 0
 cached_taker_fee = 0.0011; last_fee_check = 0
 
-# ANTI SPAM ERROR
 error_notified = {"scout": False, "binance": False, "supabase": False}
 
-# FIX: GANTI ASYNCIO.RUN JADI CREATE_TASK
 def supa_req(m,u,**k):
     global error_notified
     try:
@@ -70,9 +68,15 @@ def get_pos_by_area(area, positions): return [p for p in positions if p['area'] 
 async def get_balance(binance_conn, asset):
     try: bal = await binance_conn.fetch_balance(); return float(bal[asset]['free'])
     except: return 0
+
+# FIX 1: GET PRICE PAKE API PUBLIC BIAR GAK KENA BLOK
 async def get_price(binance_conn):
-    try: ticker = await binance_conn.fetch_ticker(PAIR); return float(ticker['last'])
-    except: return 0
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5)
+        return float(r.json()['price'])
+    except Exception as e:
+        logging.error(f"Gagal get_price public: {e}")
+        return 0
 
 # ATR UPDATE: JAM 00:00 WAJIB + CADANGAN 20%
 async def get_atr_grid(binance_conn):
@@ -89,7 +93,6 @@ async def get_atr_grid(binance_conn):
         harus_update = True
         alasan = "JAM 00:00"
         last_atr_update_day = current_day
-
     elif base_price_for_atr > 0:
         perubahan = abs(price - base_price_for_atr) / base_price_for_atr
         if perubahan >= 0.20:
@@ -115,7 +118,6 @@ async def get_qty_aman(binance_conn, price):
         qty_by_usdt = math.ceil(MIN_USDT/price/step)*step; qty = max(qty_by_usdt, QTY_FIXED); return round(qty, 8)
     except: return QTY_FIXED
 
-# FEE ASLI DARI BINANCE
 async def get_fee_binance(binance_conn):
     global last_fee_check, cached_taker_fee
     if time.time() - last_fee_check < 3600: return 0.0011, cached_taker_fee
@@ -137,7 +139,6 @@ async def notif_status(msg):
     try: requests.post(url, json={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "Markdown", "reply_markup": keyboard}, timeout=5)
     except: pass
 
-# 1. SINKRON DB DENGAN BINANCE
 async def sinkron_db_dengan_binance(binance_conn):
     positions_db = get_positions_cache()
     balance_coin = await get_balance(binance_conn, PAIR.split('/')[0])
@@ -282,7 +283,7 @@ async def handle_webhook(request):
     if chat_id == TELE_CHAT_ID and "STATUS" in text:
         binance_temp = ccxt.binance({'apiKey': API_KEY,'secret': API_SECRET,'enableRateLimit': True})
         try:
-            price = await get_price(binance_temp)
+            price = await get_price(binance_temp) # PAKE PUBLIC JUGA
             pos = get_positions_cache()
             usdt = await get_balance(binance_temp, "USDT")
             qty_kasar = await get_qty_aman(binance_temp, price)
@@ -294,17 +295,21 @@ async def handle_webhook(request):
                 for p in buy_list: b = p['buy_price']; s = b + last_grid; posisi_txt += f"`B{b:,.0f} - S{s:,.0f}` | A:`{p['area']:,.0f}` | Q:`{p['qty']}`\n"
             else: posisi_txt = "`- Belum ada posisi -`"
             saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else f"⚠️ KURANG {modal_butuh_kasar-usdt:.2f}"
-            txt = f"*BOT V30.3.2*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{usdt:.2f}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
+            txt = f"*BOT V30.3.3*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{usdt:.2f}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
             await notif_status(txt)
         finally: await binance_temp.close()
     return web.Response(text="ok")
 
-# FIX: TAMBAH TRY FINALLY + CLOSE
 async def main():
     global binance_scout, last_grid, base_price_start, base_price_for_atr, last_atr_update_day
     resource.setrlimit(resource.RLIMIT_AS, (180 * 1024 * 1024, 180 * 1024 * 1024))
 
     binance_scout = ccxt.binance({'apiKey': API_KEY,'secret': API_SECRET,'enableRateLimit': True})
+
+    # FIX 2: CEK FLY_URL SEBELUM SET WEBHOOK
+    if not FLY_URL.startswith("https://"):
+        logging.error(f"FLY_URL SALAH: {FLY_URL}")
+        await notif_status(f"⚠️ FLY_URL SALAH! Harus https://nama.fly.dev")
 
     try:
         base_price_start = await get_price(binance_scout)
@@ -322,12 +327,12 @@ async def main():
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
-        requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"})
-        await notif_status(f"✅ *BOT V30.3.2 24JAM JALAN*\nGrid: `${last_grid:,.0f}`")
+        requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"}, timeout=5)
+        await notif_status(f"✅ *BOT V30.3.3 24JAM JALAN*\nGrid: `${last_grid:,.0f}`")
 
         await scout_loop()
     finally:
-        await binance_scout.close() # INI PENTING BIAR GAK BOCOR
+        await binance_scout.close()
 
 def handle_exit(): stop_event.set()
 if __name__ == "__main__":
