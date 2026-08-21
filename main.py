@@ -1,5 +1,5 @@
 import os, time, math, requests, logging, signal, asyncio, gc, resource
-import ccxt.async_support as ccxt # PAKAI CCXT ASYNC BIAR LEBIH HEMAT
+import ccxt.async_support as ccxt
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -7,8 +7,8 @@ logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
-PAIR = os.getenv("PAIR", "BTC/USDT") # CCXT PAKE /
-PAIR_BINANCE = "BTCUSDT" # BUAT SUPABASE TETEP GINI
+PAIR = os.getenv("PAIR", "BTC/USDT")
+PAIR_BINANCE = "BTCUSDT"
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 SUPA_URL = os.getenv("SUPA_URL")
@@ -21,7 +21,7 @@ SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
 FEE_KASAR = 0.0011
 
-binance = None # INI JADI CCXT
+binance = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 last_grid = 0; base_price_start = 0; app = None
@@ -50,7 +50,7 @@ def get_positions_full():
 
 def get_positions_cache():
     global cached_positions, cached_pos_time
-    if time.time() - cached_pos_time < 10: # NAIKIN JADI 10 DETIK
+    if time.time() - cached_pos_time < 3: # DARI 10 DETIK TURUN JADI 3 DETIK
         return cached_positions
     cached_positions = get_positions()
     cached_pos_time = time.time()
@@ -59,7 +59,7 @@ def get_positions_cache():
 def area_aktif(area, positions): return any(p['area'] == area for p in positions)
 def get_pos_by_area(area, positions): return [p for p in positions if p['area'] == area]
 
-async def get_balance(asset): # CCXT ASYNC
+async def get_balance(asset):
     try:
         bal = await binance.fetch_balance()
         return float(bal[asset]['free'])
@@ -67,7 +67,7 @@ async def get_balance(asset): # CCXT ASYNC
 
 async def get_price_cache():
     global cached_price, cached_price_time
-    if time.time() - cached_price_time < 5:
+    if time.time() - cached_price_time < 2: # DARI 5 DETIK TURUN JADI 2 DETIK
         return cached_price
     try: 
         ticker = await binance.fetch_ticker(PAIR)
@@ -152,7 +152,7 @@ async def satpam_buy(price, area, reason="GRID"):
         await notif_event(f"🟢 BUY [{reason}] @`{price:.2f}` AREA `{area}` | QTY `{qty}` | Fee `{taker_fee_asli*100:.3f}%`")
         if await get_balance("USDT") < usdt_need:
             if not await cek_dana_dan_jual(usdt_need, price): return
-        order = await binance.create_market_buy_order(PAIR, qty) # CCXT BUY
+        order = await binance.create_market_buy_order(PAIR, qty)
         if order['status']== 'closed':
             supa_req("POST", f"{SUPA_URL}/rest/v1/positions",
                      json={"pair":PAIR_BINANCE,"area":area,"buy_price":price,"qty":qty,"order_id":str(order['id'])},
@@ -172,7 +172,7 @@ async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
         total_qty = sum(p['qty'] for p in positions_in_area)
         _, taker_fee_asli = await get_fee_binance()
         await notif_event(f"🔴 SELL [{mode}] AREA `{area}` @`{price:.2f}` | Fee `{taker_fee_asli*100:.3f}%`")
-        order = await binance.create_market_sell_order(PAIR, total_qty) # CCXT SELL
+        order = await binance.create_market_sell_order(PAIR, total_qty)
         if order['status']== 'closed':
             supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}&area=eq.{area}")
             avg_buy = sum(p['buy_price']*p['qty'] for p in positions_in_area) / total_qty
@@ -272,7 +272,7 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_status_cache, last_status_cache_time
-    if time.time() - last_status_cache_time < 30 and last_status_cache!= "":
+    if time.time() - last_status_cache_time < 5 and last_status_cache!= "": # DARI 30 DETIK TURUN JADI 5 DETIK
         await update.message.reply_text(last_status_cache, reply_markup=KEYBOARD, parse_mode="Markdown")
         return
     try:
@@ -299,7 +299,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else "⚠️ KURANG"
 
         txt = (
-            f"*BOT V30.0.0 CCXT*\n"
+            f"*BOT V30.0.1 NGEBUT*\n"
             f"_Mode: {mode}_\n\n"
             f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
             f"*Saldo USDT:* `{usdt:.2f}` {saldo_status}\n"
@@ -318,14 +318,13 @@ async def main():
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V30.0.0 CCXT START...")
+            logging.info("BOT V30.0.1 NGEBUT START...")
             await asyncio.sleep(15)
 
             app = ApplicationBuilder().token(TELE_TOKEN).build()
             app.add_handler(CommandHandler("start", status))
             app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
-            # INIT CCXT
             binance = ccxt.binance({
                 'apiKey': API_KEY,
                 'secret': API_SECRET,
@@ -339,16 +338,16 @@ async def main():
 
             await cek_pengaman_restart(base_price_start, db)
 
-            app.job_queue.run_repeating(scout_loop, interval=15, first=15) # 15 DETIK
+            app.job_queue.run_repeating(scout_loop, interval=3, first=3) # INI YG DIUBAH JADI 3 DETIK
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-            await notif_status("✅ *BOT V30.0.0 CCXT JALAN*")
-            logging.info("BOT V30.0.0 CCXT JALAN...")
+            await notif_status("✅ *BOT V30.0.1 NGEBUT JALAN*")
+            logging.info("BOT V30.0.1 NGEBUT JALAN...")
 
             stop = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
             await stop.wait(); await app.stop(); await app.shutdown()
-            await binance.close() # TUTUP KONEKSI CCXT
+            await binance.close()
             break
         except Exception as e:
             logging.error(f"CRASH: {e}. RESTART 10 DETIK")
