@@ -20,6 +20,7 @@ ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
 FEE_KASAR = 0.0011
+SCOUT_INTERVAL = 5 # GANTI JADI 5 DETIK. 3 DETIK MASIH BISA TAPI 5 LEBIH AMAN
 
 binance = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -28,6 +29,7 @@ last_grid = 0; base_price_start = 0; app = None
 is_executing = False; mode_flexible = True
 last_status_msg = ""
 bot_start_time = time.time()
+stop_event = asyncio.Event()
 
 last_fee_check = 0; cached_taker_fee = 0.0011
 cached_price = 0; cached_price_time = 0
@@ -50,7 +52,7 @@ def get_positions_full():
 
 def get_positions_cache():
     global cached_positions, cached_pos_time
-    if time.time() - cached_pos_time < 3: # DARI 10 DETIK TURUN JADI 3 DETIK
+    if time.time() - cached_pos_time < 5:
         return cached_positions
     cached_positions = get_positions()
     cached_pos_time = time.time()
@@ -67,7 +69,7 @@ async def get_balance(asset):
 
 async def get_price_cache():
     global cached_price, cached_price_time
-    if time.time() - cached_price_time < 2: # DARI 5 DETIK TURUN JADI 2 DETIK
+    if time.time() - cached_price_time < 3:
         return cached_price
     try: 
         ticker = await binance.fetch_ticker(PAIR)
@@ -232,47 +234,48 @@ async def cek_pengaman_restart(price, positions):
         if not area_aktif(area, positions):
             await satpam_buy(price, area, reason="RESTART-DIP")
 
-async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
+async def scout_loop(): # INI UDAH GAK PAKE CONTEXT LAGI
     global last_grid, base_price_start, mode_flexible
-    if is_executing: return
-    try:
-        price = await get_price_cache()
-        if price == 0: return
-        positions = get_positions_cache()
-
-        if not positions:
-            if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
-                await satpam_buy(price, get_area(price, last_grid), reason="AUTO-START")
-            return
-
-        area_tertinggi = max(p['area'] for p in positions)
-        if price >= area_tertinggi + last_grid:
-            await satpam_sell_instansemua(positions, price)
-            return
-
-        for area in set(p['area'] for p in positions):
-            pos_in_area = get_pos_by_area(area, positions)
-            buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
-            if price >= buy_terendah_area + last_grid:
-                area_atas = get_area(price + last_grid, last_grid)
-                if area_aktif(area_atas, positions):
-                    await satpam_sell_area(area, pos_in_area, price, mode="BIASA")
-                else:
-                    await satpam_sell_area(area, pos_in_area, price, mode="REENTRY")
-                    await satpam_buy(price, get_area(price, last_grid), reason="RE-ENTRY")
-                return
-
-        buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
-        if price <= buy_trigger:
-            area = get_area(price, last_grid)
-            if not area_aktif(area, positions):
-                await satpam_buy(price, area, reason="GRID")
-    finally:
-        gc.collect()
+    while not stop_event.is_set():
+        if not is_executing:
+            try:
+                price = await get_price_cache()
+                if price!= 0:
+                    positions = get_positions_cache()
+                    if not positions:
+                        if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
+                            await satpam_buy(price, get_area(price, last_grid), reason="AUTO-START")
+                    else:
+                        area_tertinggi = max(p['area'] for p in positions)
+                        if price >= area_tertinggi + last_grid:
+                            await satpam_sell_instansemua(positions, price)
+                        else:
+                            for area in set(p['area'] for p in positions):
+                                pos_in_area = get_pos_by_area(area, positions)
+                                buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
+                                if price >= buy_terendah_area + last_grid:
+                                    area_atas = get_area(price + last_grid, last_grid)
+                                    if area_aktif(area_atas, positions):
+                                        await satpam_sell_area(area, pos_in_area, price, mode="BIASA")
+                                    else:
+                                        await satpam_sell_area(area, pos_in_area, price, mode="REENTRY")
+                                        await satpam_buy(price, get_area(price, last_grid), reason="RE-ENTRY")
+                                    break
+                            else:
+                                buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
+                                if price <= buy_trigger:
+                                    area = get_area(price, last_grid)
+                                    if not area_aktif(area, positions):
+                                        await satpam_buy(price, area, reason="GRID")
+            except Exception as e:
+                logging.error(f"SCOUT ERROR: {e}")
+            finally:
+                gc.collect()
+        await asyncio.sleep(SCOUT_INTERVAL)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_status_cache, last_status_cache_time
-    if time.time() - last_status_cache_time < 5 and last_status_cache!= "": # DARI 30 DETIK TURUN JADI 5 DETIK
+    if time.time() - last_status_cache_time < 10 and last_status_cache!= "":
         await update.message.reply_text(last_status_cache, reply_markup=KEYBOARD, parse_mode="Markdown")
         return
     try:
@@ -299,8 +302,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else "⚠️ KURANG"
 
         txt = (
-            f"*BOT V30.0.1 NGEBUT*\n"
-            f"_Mode: {mode}_\n\n"
+            f"*BOT V30.1.0 HEMAT*\n"
+            f"_Mode: {mode} | Interval: {SCOUT_INTERVAL}s_\n\n"
             f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
             f"*Saldo USDT:* `{usdt:.2f}` {saldo_status}\n"
             f"*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n"
@@ -318,7 +321,7 @@ async def main():
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V30.0.1 NGEBUT START...")
+            logging.info("BOT V30.1.0 HEMAT START...")
             await asyncio.sleep(15)
 
             app = ApplicationBuilder().token(TELE_TOKEN).build()
@@ -338,20 +341,29 @@ async def main():
 
             await cek_pengaman_restart(base_price_start, db)
 
-            app.job_queue.run_repeating(scout_loop, interval=3, first=3) # INI YG DIUBAH JADI 3 DETIK
+            # JALANIN TELEGRAM + SCOUT BARengan TANPA JOBQUEUE
+            scout_task = asyncio.create_task(scout_loop())
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
+            
+            await notif_status("✅ *BOT V30.1.0 HEMAT JALAN DI 256MB*")
+            logging.info("BOT V30.1.0 HEMAT JALAN...")
 
-            await notif_status("✅ *BOT V30.0.1 NGEBUT JALAN*")
-            logging.info("BOT V30.0.1 NGEBUT JALAN...")
-
-            stop = asyncio.Event()
-            for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
-            await stop.wait(); await app.stop(); await app.shutdown()
+            await stop_event.wait()
+            scout_task.cancel()
+            await app.stop(); await app.shutdown()
             await binance.close()
+            logging.info("BOT STOPPED CLEAN")
             break
         except Exception as e:
             logging.error(f"CRASH: {e}. RESTART 10 DETIK")
+            if binance: await binance.close()
+            stop_event.set()
             await asyncio.sleep(10)
+            stop_event.clear()
+
+def handle_exit():
+    stop_event.set()
 
 if __name__ == "__main__":
+    for sig in (signal.SIGINT, signal.SIGTERM): signal.signal(sig, lambda s,f: handle_exit())
     asyncio.run(main())
