@@ -1,5 +1,5 @@
 import os, time, math, requests, logging, signal, asyncio, gc, resource
-from binance.client import Client
+import ccxt.async_support as ccxt # PAKAI CCXT ASYNC BIAR LEBIH HEMAT
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -7,7 +7,8 @@ logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
-PAIR = os.getenv("PAIR", "BTCUSDT")
+PAIR = os.getenv("PAIR", "BTC/USDT") # CCXT PAKE /
+PAIR_BINANCE = "BTCUSDT" # BUAT SUPABASE TETEP GINI
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 SUPA_URL = os.getenv("SUPA_URL")
@@ -18,9 +19,9 @@ MIN_USDT = 5
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
-FEE_KASAR = 0.0011 # 0.11% UNTUK HITUNGAN STATUS SAJA
+FEE_KASAR = 0.0011
 
-binance = None
+binance = None # INI JADI CCXT
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
 last_grid = 0; base_price_start = 0; app = None
@@ -32,6 +33,7 @@ last_fee_check = 0; cached_taker_fee = 0.0011
 cached_price = 0; cached_price_time = 0
 cached_positions = []; cached_pos_time = 0
 cached_atr_grid = 500
+last_status_cache = ""; last_status_cache_time = 0
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
 def supa_req(m,u,**k):
@@ -39,16 +41,16 @@ def supa_req(m,u,**k):
     except: return None
 
 def get_positions():
-    r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
+    r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}&order=buy_price.asc")
     return r.json() if r and r.status_code==200 else []
 
-def get_positions_full(): # BUAT STATUS BIAR NAMPILIN SEMUA
-    r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&order=buy_price.asc")
+def get_positions_full():
+    r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}&order=buy_price.asc")
     return r.json() if r and r.status_code==200 else []
 
 def get_positions_cache():
     global cached_positions, cached_pos_time
-    if time.time() - cached_pos_time < 3:
+    if time.time() - cached_pos_time < 10: # NAIKIN JADI 10 DETIK
         return cached_positions
     cached_positions = get_positions()
     cached_pos_time = time.time()
@@ -56,50 +58,59 @@ def get_positions_cache():
 
 def area_aktif(area, positions): return any(p['area'] == area for p in positions)
 def get_pos_by_area(area, positions): return [p for p in positions if p['area'] == area]
-def get_balance(asset):
-    try: return float(binance.get_asset_balance(asset)['free'])
+
+async def get_balance(asset): # CCXT ASYNC
+    try:
+        bal = await binance.fetch_balance()
+        return float(bal[asset]['free'])
     except: return 0
 
-def get_price_cache():
+async def get_price_cache():
     global cached_price, cached_price_time
-    if time.time() - cached_price_time < 3:
+    if time.time() - cached_price_time < 5:
         return cached_price
-    try: cached_price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
+    try: 
+        ticker = await binance.fetch_ticker(PAIR)
+        cached_price = float(ticker['last'])
     except: cached_price = 0
     cached_price_time = time.time()
     return cached_price
 
-def get_binance_balance_coin():
-    try: return float(binance.get_asset_balance(PAIR.replace("USDT",""))['free'])
+async def get_binance_balance_coin():
+    try:
+        bal = await binance.fetch_balance()
+        coin = PAIR.split('/')[0]
+        return float(bal[coin]['free'])
     except: return 0
 
-def get_atr_grid():
+async def get_atr_grid():
     global cached_atr_grid
     if cached_atr_grid!= 500: return cached_atr_grid
     try:
-        k = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
-        tr = [abs(float(k[i][4])-float(k[i-1][4])) for i in range(1,len(k))]
+        ohlcv = await binance.fetch_ohlcv(PAIR, '1h', limit=ATR_PERIOD+1)
+        closes = [c[4] for c in ohlcv]
+        tr = [abs(closes[i]-closes[i-1]) for i in range(1,len(closes))]
         atr = sum(tr)/len(tr) if tr else 500
         cached_atr_grid = max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
         return cached_atr_grid
     except: return 500
 
-def get_qty_aman(price):
+async def get_qty_aman(price):
     try:
-        info = binance.get_symbol_info(PAIR)
-        step = float(next(f['stepSize'] for f in info['filters'] if f['filterType']=='LOT_SIZE'))
+        market = binance.market(PAIR)
+        step = market['limits']['amount']['min']
         qty_by_usdt = math.ceil(MIN_USDT/price/step)*step
         qty = max(qty_by_usdt, QTY_FIXED)
         return round(qty, 8)
     except: return QTY_FIXED
 
-def get_fee_binance(): # INI BUAT BUY/SELL BENERAN. LANGSUNG DARI BINANCE
+async def get_fee_binance():
     global last_fee_check, cached_taker_fee
     if time.time() - last_fee_check < 3600:
         return 0.0011, cached_taker_fee
     try:
-        info = binance.get_trade_fee(symbol=PAIR)
-        cached_taker_fee = float(info['tradeFee'][0]['taker']) / 10000
+        fee = await binance.fetch_trading_fee(PAIR)
+        cached_taker_fee = float(fee['taker'])
         last_fee_check = time.time()
         return 0.0011, cached_taker_fee
     except:
@@ -123,11 +134,11 @@ async def notif_status(msg):
 
 async def sinkron_db_dengan_binance():
     positions_db = get_positions_cache()
-    balance_coin = get_binance_balance_coin()
+    balance_coin = await get_binance_balance_coin()
     total_qty_db = sum(p['qty'] for p in positions_db)
     if abs(balance_coin - total_qty_db) > SELISIH_TOLERANSI:
         await notif_status(f"SYNC: DB `{total_qty_db:.8f}` vs BINANCE `{balance_coin:.8f}`. RESET DB")
-        supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
+        supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}")
 
 async def satpam_buy(price, area, reason="GRID"):
     global is_executing, mode_flexible
@@ -135,16 +146,16 @@ async def satpam_buy(price, area, reason="GRID"):
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
-        qty = get_qty_aman(price)
-        _, taker_fee_asli = get_fee_binance()
+        qty = await get_qty_aman(price)
+        _, taker_fee_asli = await get_fee_binance()
         usdt_need = price * qty * (1 + taker_fee_asli + taker_fee_asli + BUFFER)
         await notif_event(f"🟢 BUY [{reason}] @`{price:.2f}` AREA `{area}` | QTY `{qty}` | Fee `{taker_fee_asli*100:.3f}%`")
-        if get_balance("USDT") < usdt_need:
+        if await get_balance("USDT") < usdt_need:
             if not await cek_dana_dan_jual(usdt_need, price): return
-        order = binance.order_market_buy(symbol=PAIR, quantity=qty)
-        if order['status']== 'FILLED':
+        order = await binance.create_market_buy_order(PAIR, qty) # CCXT BUY
+        if order['status']== 'closed':
             supa_req("POST", f"{SUPA_URL}/rest/v1/positions",
-                     json={"pair":PAIR,"area":area,"buy_price":price,"qty":qty,"order_id":str(order['orderId'])},
+                     json={"pair":PAIR_BINANCE,"area":area,"buy_price":price,"qty":qty,"order_id":str(order['id'])},
                      headers={**SUPA_HEADERS,"Prefer":"resolution=merge-duplicates"})
             await notif_event(f"🟢 BUY SUKSES QTY `{qty}`")
             mode_flexible = False
@@ -159,11 +170,11 @@ async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
     try:
         await sinkron_db_dengan_binance()
         total_qty = sum(p['qty'] for p in positions_in_area)
-        _, taker_fee_asli = get_fee_binance()
+        _, taker_fee_asli = await get_fee_binance()
         await notif_event(f"🔴 SELL [{mode}] AREA `{area}` @`{price:.2f}` | Fee `{taker_fee_asli*100:.3f}%`")
-        order = binance.order_market_sell(symbol=PAIR, quantity=total_qty)
-        if order['status']== 'FILLED':
-            supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&area=eq.{area}")
+        order = await binance.create_market_sell_order(PAIR, total_qty) # CCXT SELL
+        if order['status']== 'closed':
+            supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}&area=eq.{area}")
             avg_buy = sum(p['buy_price']*p['qty'] for p in positions_in_area) / total_qty
             profit = (price - avg_buy) * total_qty * (1 - taker_fee_asli - BUFFER)
             await notif_event(f"🔴 SELL SELESAI. PROFIT `~{profit:.2f}`")
@@ -178,11 +189,11 @@ async def satpam_sell_instansemua(all_positions, price):
     try:
         await sinkron_db_dengan_binance()
         total_qty = sum(p['qty'] for p in all_positions)
-        _, taker_fee_asli = get_fee_binance()
+        _, taker_fee_asli = await get_fee_binance()
         await notif_event(f"🔴 SELL INSTAN @`{price:.2f}` | Fee `{taker_fee_asli*100:.3f}%`")
-        order = binance.order_market_sell(symbol=PAIR, quantity=total_qty)
-        if order['status']== 'FILLED':
-            supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
+        order = await binance.create_market_sell_order(PAIR, total_qty)
+        if order['status']== 'closed':
+            supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}")
             avg_buy = sum(p['buy_price']*p['qty'] for p in all_positions) / total_qty
             profit = (price - avg_buy) * total_qty * (1 - taker_fee_asli)
             await notif_event(f"🔴 SELL INSTAN SELESAI. PROFIT `~{profit:.2f}`")
@@ -202,7 +213,7 @@ async def cek_dana_dan_jual(usdt_need, price):
         if price >= buy_terendah_area + last_grid:
             await satpam_sell_area(area, pos_in_area, price, mode="ROLING")
             await asyncio.sleep(2)
-            if get_balance("USDT") >= usdt_need:
+            if await get_balance("USDT") >= usdt_need:
                 await notif_event(f"ROLING SUKSES")
                 return True
     return False
@@ -225,7 +236,7 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     global last_grid, base_price_start, mode_flexible
     if is_executing: return
     try:
-        price = get_price_cache()
+        price = await get_price_cache()
         if price == 0: return
         positions = get_positions_cache()
 
@@ -259,16 +270,18 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     finally:
         gc.collect()
 
-# === STATUS FINAL: SEMUA POSISI + SALDO USDT ===
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_status_cache, last_status_cache_time
+    if time.time() - last_status_cache_time < 30 and last_status_cache!= "":
+        await update.message.reply_text(last_status_cache, reply_markup=KEYBOARD, parse_mode="Markdown")
+        return
     try:
-        price = cached_price
-        pos = get_positions_full() # AMBIL SEMUA DARI DB
+        price = await get_price_cache()
+        pos = get_positions_full()
         mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
+        usdt = await get_balance("USDT")
 
-        usdt = get_balance("USDT") # CUMA SALDO USDT
-
-        qty_kasar = get_qty_aman(price)
+        qty_kasar = await get_qty_aman(price)
         modal_butuh_kasar = price * qty_kasar * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
 
         posisi_txt = ""
@@ -286,7 +299,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else "⚠️ KURANG"
 
         txt = (
-            f"*BOT V29.17.9*\n"
+            f"*BOT V30.0.0 CCXT*\n"
             f"_Mode: {mode}_\n\n"
             f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
             f"*Saldo USDT:* `{usdt:.2f}` {saldo_status}\n"
@@ -294,40 +307,48 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"*POSISI:* `{len(pos)}`\n"
             f"{posisi_txt}"
         )
+        last_status_cache = txt
+        last_status_cache_time = time.time()
         await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"Gagal ambil status: {e}")
 
 async def main():
-    resource.setrlimit(resource.RLIMIT_AS, (200 * 1024 * 1024, 200 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_AS, (180 * 1024 * 1024, 180 * 1024 * 1024))
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V29.17.9 START...")
+            logging.info("BOT V30.0.0 CCXT START...")
             await asyncio.sleep(15)
 
             app = ApplicationBuilder().token(TELE_TOKEN).build()
             app.add_handler(CommandHandler("start", status))
             app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
-            binance = Client(API_KEY, API_SECRET, {"timeout": 5})
-            binance.ping()
+            # INIT CCXT
+            binance = ccxt.binance({
+                'apiKey': API_KEY,
+                'secret': API_SECRET,
+                'enableRateLimit': True,
+                'options': {'defaultType': 'spot'}
+            })
 
             await sinkron_db_dengan_binance()
-            db = get_positions_cache(); last_grid = get_atr_grid(); base_price_start = get_price_cache()
+            db = get_positions_cache(); last_grid = await get_atr_grid(); base_price_start = await get_price_cache()
             if len(db) > 0: mode_flexible = False
 
             await cek_pengaman_restart(base_price_start, db)
 
-            app.job_queue.run_repeating(scout_loop, interval=5, first=5)
+            app.job_queue.run_repeating(scout_loop, interval=15, first=15) # 15 DETIK
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-            await notif_status("✅ *BOT V29.17.9 JALAN*")
-            logging.info("BOT V29.17.9 JALAN...")
+            await notif_status("✅ *BOT V30.0.0 CCXT JALAN*")
+            logging.info("BOT V30.0.0 CCXT JALAN...")
 
             stop = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
             await stop.wait(); await app.stop(); await app.shutdown()
+            await binance.close() # TUTUP KONEKSI CCXT
             break
         except Exception as e:
             logging.error(f"CRASH: {e}. RESTART 10 DETIK")
