@@ -5,15 +5,15 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
-API_KEY = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
 PAIR = os.getenv("PAIR", "BTCUSDT")
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 SUPA_URL = os.getenv("SUPA_URL")
 SUPA_KEY = os.getenv("SUPA_KEY")
 
-MIN_GRID = 250; MAX_GRID = 1000; QTY_FIXED = 0.00001 # TETEP 0.00001
+MIN_GRID = 250; MAX_GRID = 1000; QTY_FIXED = 0.00001
 MIN_USDT = 5 # PENGAMAN 1: MINIMAL 5 USDT
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
@@ -34,6 +34,8 @@ cached_price = 0
 cached_price_time = 0
 cached_positions = []
 cached_pos_time = 0
+cached_symbol_info = None # BARU
+cached_atr_grid = 500 # BARU
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
 def supa_req(m,u,**k):
@@ -74,17 +76,29 @@ def get_binance_balance_coin():
     try: return float(binance.get_asset_balance(PAIR.replace("USDT",""))['free'])
     except: return 0
 
-def get_atr_grid():
+def get_symbol_info_cache(): # BARU - CACHE SYMBOL INFO
+    global cached_symbol_info
+    if cached_symbol_info: return cached_symbol_info
+    try:
+        cached_symbol_info = binance.get_symbol_info(PAIR)
+        return cached_symbol_info
+    except: return None
+
+def get_atr_grid(): # UDAH DI CACHE
+    global cached_atr_grid
+    if cached_atr_grid!= 500: return cached_atr_grid
     try:
         k = binance.get_klines(symbol=PAIR, interval=Client.KLINE_INTERVAL_1HOUR, limit=ATR_PERIOD+1)
         tr = [abs(float(k[i][4])-float(k[i-1][4])) for i in range(1,len(k))]
         atr = sum(tr)/len(tr) if tr else 500
-        return max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
+        cached_atr_grid = max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
+        return cached_atr_grid
     except: return 500
 
 def get_qty_aman(price):
     try:
-        info = binance.get_symbol_info(PAIR)
+        info = get_symbol_info_cache() # PAKE CACHE
+        if not info: return QTY_FIXED
         step = float(next(f['stepSize'] for f in info['filters'] if f['filterType']=='LOT_SIZE'))
         qty_by_usdt = math.ceil(MIN_USDT/price/step)*step
         qty_by_fixed = QTY_FIXED
@@ -276,8 +290,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, taker_fee = get_fee_binance()
     modal_buy = price * qty_next * (1 + taker_fee + BUFFER)
 
-    txt = f"*BOT V29.12 2 PENGAMAN*\n"
-    txt += f"_Daging: ATR+SellInstan+Reentry+Cache_\n\n"
+    txt = f"*BOT V29.13 2 PENGAMAN*\n"
+    txt += f"_Daging: ATR+SellInstan+Reentry+FullCache_\n\n"
     txt += f"*Mode:* `{mode}`\n"
     txt += f"*Harga:* `${price:,.2f}` | *GRID:* `${last_grid:,.2f}`\n"
     txt += f"*Saldo:* `{usdt:.2f}` | *Posisi:* `{len(pos)}`\n"
@@ -286,35 +300,41 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
 async def main():
-    global app, last_grid, base_price_start, mode_flexible, binance
-    logging.info("BOT V29.12 START...")
-    await asyncio.sleep(15)
+    while True: # LOOP ANTI MATI
+        try:
+            global app, last_grid, base_price_start, mode_flexible, binance
+            logging.info("BOT V29.13 START...")
+            await asyncio.sleep(15)
 
-    app = ApplicationBuilder().token(TELE_TOKEN).build()
-    app.add_handler(CommandHandler("start", status))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
+            app = ApplicationBuilder().token(TELE_TOKEN).build()
+            app.add_handler(CommandHandler("start", status))
+            app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
-    try:
-        binance = Client(API_KEY, API_SECRET, {"timeout": 5})
-        binance.ping()
-    except Exception as e:
-        logging.error(f"BINANCE GAGAL: {e}")
+            try:
+                binance = Client(API_KEY, API_SECRET, {"timeout": 5})
+                binance.ping()
+            except Exception as e:
+                logging.error(f"BINANCE GAGAL: {e}")
 
-    await sinkron_db_dengan_binance()
-    db = get_positions_cache(); last_grid = get_atr_grid(); base_price_start = get_price_cache()
-    if len(db) > 0: mode_flexible = False
+            await sinkron_db_dengan_binance()
+            db = get_positions_cache(); last_grid = get_atr_grid(); base_price_start = get_price_cache()
+            if len(db) > 0: mode_flexible = False
 
-    await cek_pengaman_restart(base_price_start, db)
+            await cek_pengaman_restart(base_price_start, db)
 
-    app.job_queue.run_repeating(scout_loop, interval=3, first=5) # TETEP 3 DETIK
-    await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
+            app.job_queue.run_repeating(scout_loop, interval=3, first=5) # TETEP 3 DETIK
+            await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-    await notif_status("✅ *BOT V29.12 2 PENGAMAN JALAN*")
-    logging.info("BOT V29.12 JALAN...")
+            await notif_status("✅ *BOT V29.13 2 PENGAMAN JALAN*")
+            logging.info("BOT V29.13 JALAN...")
 
-    stop = asyncio.Event()
-    for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
-    await stop.wait(); await app.stop(); await app.shutdown()
+            stop = asyncio.Event()
+            for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+            await stop.wait(); await app.stop(); await app.shutdown()
+            break # keluar kalau di stop manual
+        except Exception as e:
+            logging.error(f"CRASH: {e}. RESTART 10 DETIK LAGI")
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
