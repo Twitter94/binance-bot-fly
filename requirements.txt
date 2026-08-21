@@ -1,4 +1,4 @@
-python-telegram-bot==20.3
-aiohttp==3.8.6
+python-telegram-bot[job-queue]==20.3
 python-binance==1.0.19
 requests==2.31.0
+aiohttp==3.8.6
