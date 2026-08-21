@@ -20,7 +20,7 @@ ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
 FEE_KASAR = 0.0011 # BUAT STATUS DOANG
-SCOUT_INTERVAL = 5
+SCOUT_INTERVAL = 3 # UDAH DIGANTI JADI 3 DETIK
 
 binance_scout = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -37,20 +37,21 @@ cached_taker_fee = 0.0011; last_fee_check = 0
 # ANTI SPAM ERROR
 error_notified = {"scout": False, "binance": False, "supabase": False}
 
+# FIX: GANTI ASYNCIO.RUN JADI CREATE_TASK
 def supa_req(m,u,**k):
     global error_notified
     try:
         r = requests.request(m,u,headers=SUPA_HEADERS,timeout=5,**k)
         if not error_notified["supabase"] and (not r or r.status_code >= 400):
-            asyncio.run(notif_status(f"⚠️ SUPABASE ERROR"))
+            asyncio.create_task(notif_status(f"⚠️ SUPABASE ERROR"))
             error_notified["supabase"] = True
         elif error_notified["supabase"] and r and r.status_code < 400:
-            asyncio.run(notif_status("✅ SUPABASE SUDAH NORMAL"))
+            asyncio.create_task(notif_status("✅ SUPABASE SUDAH NORMAL"))
             error_notified["supabase"] = False
         return r
     except Exception as e:
         if not error_notified["supabase"]:
-            asyncio.run(notif_status(f"⚠️ SUPABASE DOWN"))
+            asyncio.create_task(notif_status(f"⚠️ SUPABASE DOWN"))
             error_notified["supabase"] = True
         return None
 
@@ -127,12 +128,14 @@ async def get_fee_binance(binance_conn):
 
 async def notif_event(msg):
     url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+    try: requests.post(url, json={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=5)
+    except: pass
 
 async def notif_status(msg):
     url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
     keyboard = {"keyboard": [["STATUS"]], "resize_keyboard": True}
-    requests.post(url, json={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "Markdown", "reply_markup": keyboard})
+    try: requests.post(url, json={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "Markdown", "reply_markup": keyboard}, timeout=5)
+    except: pass
 
 # 1. SINKRON DB DENGAN BINANCE
 async def sinkron_db_dengan_binance(binance_conn):
@@ -291,36 +294,40 @@ async def handle_webhook(request):
                 for p in buy_list: b = p['buy_price']; s = b + last_grid; posisi_txt += f"`B{b:,.0f} - S{s:,.0f}` | A:`{p['area']:,.0f}` | Q:`{p['qty']}`\n"
             else: posisi_txt = "`- Belum ada posisi -`"
             saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else f"⚠️ KURANG {modal_butuh_kasar-usdt:.2f}"
-            txt = f"*BOT V30.3.1*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{usdt:.2f}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
+            txt = f"*BOT V30.3.2*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{usdt:.2f}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
             await notif_status(txt)
         finally: await binance_temp.close()
     return web.Response(text="ok")
 
+# FIX: TAMBAH TRY FINALLY + CLOSE
 async def main():
     global binance_scout, last_grid, base_price_start, base_price_for_atr, last_atr_update_day
     resource.setrlimit(resource.RLIMIT_AS, (180 * 1024 * 1024, 180 * 1024 * 1024))
 
     binance_scout = ccxt.binance({'apiKey': API_KEY,'secret': API_SECRET,'enableRateLimit': True})
 
-    base_price_start = await get_price(binance_scout)
-    last_grid = await get_atr_grid(binance_scout)
-    base_price_for_atr = base_price_start
-    last_atr_update_day = time.localtime(time.time()).tm_yday
+    try:
+        base_price_start = await get_price(binance_scout)
+        last_grid = await get_atr_grid(binance_scout)
+        base_price_for_atr = base_price_start
+        last_atr_update_day = time.localtime(time.time()).tm_yday
 
-    await sinkron_db_dengan_binance(binance_scout)
-    if len(get_positions_cache()) > 0: mode_flexible = False
-    await cek_pengaman_restart(binance_scout, base_price_start, get_positions_cache())
+        await sinkron_db_dengan_binance(binance_scout)
+        if len(get_positions_cache()) > 0: mode_flexible = False
+        await cek_pengaman_restart(binance_scout, base_price_start, get_positions_cache())
 
-    app = web.Application()
-    app.router.add_post(f"/{TELE_TOKEN}", handle_webhook)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8080)
-    await site.start()
-    requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"})
-    await notif_status(f"✅ *BOT V30.3.1 24JAM JALAN*\nGrid: `${last_grid:,.0f}`")
+        app = web.Application()
+        app.router.add_post(f"/{TELE_TOKEN}", handle_webhook)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+        requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"})
+        await notif_status(f"✅ *BOT V30.3.2 24JAM JALAN*\nGrid: `${last_grid:,.0f}`")
 
-    await scout_loop()
+        await scout_loop()
+    finally:
+        await binance_scout.close() # INI PENTING BIAR GAK BOCOR
 
 def handle_exit(): stop_event.set()
 if __name__ == "__main__":
