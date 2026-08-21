@@ -266,22 +266,48 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     finally:
         gc.collect()
 
+# === INI FUNGSI STATUS BARU ===
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
-    price = get_price_cache(); usdt = get_balance("USDT"); pos = get_positions_cache()
+    price = get_price_cache()
+    usdt = get_balance("USDT")
+    pos = get_positions_cache()
     mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
-    txt = f"*BOT V29.17 FINAL*\n*Mode:* `{mode}`\n*Harga:* `${price:,.2f}` | *GRID:* `${last_grid:,.2f}`\n*Saldo:* `{usdt:.2f}` | *Posisi:* `{len(pos)}`"
+
+    # Hitung modal butuh 1x buy
+    qty_next = get_qty_aman(price)
+    _, taker_fee = get_fee_binance()
+    modal_butuh = price * qty_next * (1 + taker_fee*2 + BUFFER)
+
+    # Bikin list posisi Buy-Sell
+    posisi_txt = ""
+    if pos:
+        buy_list = sorted([p['buy_price'] for p in pos], reverse=True)
+        for b in buy_list:
+            s = b + last_grid # TP KOTOR
+            posisi_txt += f"`B{b:,.0f} - S{s:,.0f}`\n"
+    else:
+        posisi_txt = "`-`"
+
+    txt = (
+        f"*BOT V29.17.2*\n"
+        f"_Mode: {mode}_\n\n"
+        f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
+        f"*Modal Butuh:* `${modal_butuh:.2f}` | *Saldo:* `{usdt:.2f}`\n\n"
+        f"*POSISI:* `{len(pos)}`\n"
+        f"{posisi_txt}"
+    )
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
 async def main():
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V29.17 START...")
+            logging.info("BOT V29.17.2 START...")
             await asyncio.sleep(15)
 
-            app = ApplicationBuilder().token(TELE_TOKEN).build() # PTB 20.3 OTOMATIS PAKE AIOHTTP
-            
+            app = ApplicationBuilder().token(TELE_TOKEN).build()
+
             app.add_handler(CommandHandler("start", status))
             app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
@@ -294,11 +320,11 @@ async def main():
 
             await cek_pengaman_restart(base_price_start, db)
 
-            app.job_queue.run_repeating(scout_loop, interval=3, first=5) # INI UDAH ADA KARENA [job-queue]
+            app.job_queue.run_repeating(scout_loop, interval=3, first=5)
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-            await notif_status("✅ *BOT V29.17 FINAL JALAN*")
-            logging.info("BOT V29.17 JALAN...")
+            await notif_status("✅ *BOT V29.17.2 JALAN*")
+            logging.info("BOT V29.17.2 JALAN...")
 
             stop = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
