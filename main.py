@@ -2,7 +2,7 @@ import os, time, math, requests, logging, signal, asyncio, gc
 from binance.client import Client
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from telegram.request import HTTPXRequest # BARU
+# HAPUS HTTPXRequest
 
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
@@ -29,14 +29,10 @@ last_status_msg = ""
 bot_start_time = time.time()
 
 # CACHE GLOBAL
-last_fee_check = 0
-cached_taker_fee = 0.001
-cached_price = 0
-cached_price_time = 0
-cached_positions = []
-cached_pos_time = 0
-cached_symbol_info = None
-cached_atr_grid = 500
+last_fee_check = 0; cached_taker_fee = 0.001
+cached_price = 0; cached_price_time = 0
+cached_positions = []; cached_pos_time = 0
+cached_symbol_info = None; cached_atr_grid = 500
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
 def supa_req(m,u,**k):
@@ -151,12 +147,9 @@ async def satpam_buy(price, area, reason="GRID"):
         qty = get_qty_aman(price)
         _, taker_fee = get_fee_binance()
         usdt_need = price * qty * (1 + taker_fee + BUFFER)
-
-        await notif_event(f"🟢 BUY [{reason}] @`{price:.2f}` AREA `{area}` | QTY `{qty}` | ~${price*qty:.2f} | Fee:{taker_fee*100:.2f}%")
-
+        await notif_event(f"🟢 BUY [{reason}] @`{price:.2f}` AREA `{area}` | QTY `{qty}`")
         if get_balance("USDT") < usdt_need:
             if not await cek_dana_dan_jual(usdt_need, price): return
-
         order = binance.order_market_buy(symbol=PAIR, quantity=qty)
         if order['status']== 'FILLED':
             supa_req("POST", f"{SUPA_URL}/rest/v1/positions",
@@ -176,7 +169,7 @@ async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
         await sinkron_db_dengan_binance()
         total_qty = sum(p['qty'] for p in positions_in_area)
         _, taker_fee = get_fee_binance()
-        await notif_event(f"🔴 SELL [{mode}] AREA `{area}` @`{price:.2f}` QTY `{total_qty:.8f}`")
+        await notif_event(f"🔴 SELL [{mode}] AREA `{area}` @`{price:.2f}`")
         order = binance.order_market_sell(symbol=PAIR, quantity=total_qty)
         if order['status']== 'FILLED':
             supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&area=eq.{area}")
@@ -195,7 +188,7 @@ async def satpam_sell_instansemua(all_positions, price):
         await sinkron_db_dengan_binance()
         total_qty = sum(p['qty'] for p in all_positions)
         _, taker_fee = get_fee_binance()
-        await notif_event(f"🔴 SELL INSTAN [LUAR GRID] @`{price:.2f}` QTY `{total_qty:.8f}`")
+        await notif_event(f"🔴 SELL INSTAN @`{price:.2f}`")
         order = binance.order_market_sell(symbol=PAIR, quantity=total_qty)
         if order['status']== 'FILLED':
             supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
@@ -203,8 +196,7 @@ async def satpam_sell_instansemua(all_positions, price):
             profit = (price - avg_buy) * total_qty * (1 - taker_fee)
             await notif_event(f"🔴 SELL INSTAN SELESAI. PROFIT `~{profit:.2f}`")
             await asyncio.sleep(1)
-            area_baru = get_area(price, last_grid)
-            await satpam_buy(price, area_baru, reason="REENTRY-INSTAN")
+            await satpam_buy(price, get_area(price, last_grid), reason="REENTRY-INSTAN")
     except Exception as e:
         await notif_status(f"⚠️ SELL INSTAN GAGAL: `{e}`")
     finally: is_executing = False
@@ -212,7 +204,7 @@ async def satpam_sell_instansemua(all_positions, price):
 async def cek_dana_dan_jual(usdt_need, price):
     positions = get_positions_cache()
     if not positions: return False
-    await notif_status(f"ROLING: SALDO KURANG. COBA JUAL POSISI")
+    await notif_status(f"ROLING: SALDO KURANG")
     for area in set(p['area'] for p in positions):
         pos_in_area = get_pos_by_area(area, positions)
         buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
@@ -220,9 +212,8 @@ async def cek_dana_dan_jual(usdt_need, price):
             await satpam_sell_area(area, pos_in_area, price, mode="ROLING")
             await asyncio.sleep(2)
             if get_balance("USDT") >= usdt_need:
-                await notif_event(f"ROLING SUKSES. LANJUT BUY")
+                await notif_event(f"ROLING SUKSES")
                 return True
-    await notif_status(f"ROLING GAGAL: GAK ADA POSISI YG BISA DI TP")
     return False
 
 async def cek_pengaman_restart(price, positions):
@@ -230,12 +221,11 @@ async def cek_pengaman_restart(price, positions):
     area_tertinggi = max(p['area'] for p in positions)
     area_terendah = min(p['area'] for p in positions)
     if price >= area_tertinggi + last_grid:
-        await notif_status(f"⚠️ PENGAMAN RESTART: HARGA TINGGI. SELL INSTAN")
+        await notif_status(f"⚠️ PENGAMAN: SELL INSTAN")
         await satpam_sell_instansemua(positions, price)
         return
     buy_trigger = area_terendah - last_grid
     if price <= buy_trigger:
-        await notif_status(f"⚠️ PENGAMAN RESTART: HARGA RENDAH. BUY 1X")
         area = get_area(price, last_grid)
         if not area_aktif(area, positions):
             await satpam_buy(price, area, reason="RESTART-DIP")
@@ -249,11 +239,8 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
         positions = get_positions_cache()
 
         if not positions:
-            sudah_30_menit = (time.time() - bot_start_time) >= DELAY_FIRST_BUY
-            if mode_flexible and sudah_30_menit:
-                area = get_area(price, last_grid)
-                await satpam_buy(price, area, reason="AUTO-START")
-                base_price_start = price
+            if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
+                await satpam_buy(price, get_area(price, last_grid), reason="AUTO-START")
             return
 
         area_tertinggi = max(p['area'] for p in positions)
@@ -285,39 +272,24 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
     price = get_price_cache(); usdt = get_balance("USDT"); pos = get_positions_cache()
     mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
-
-    qty_next = get_qty_aman(price)
-    _, taker_fee = get_fee_binance()
-    modal_buy = price * qty_next * (1 + taker_fee + BUFFER)
-
-    txt = f"*BOT V29.15 HTTP FIX*\n"
-    txt += f"_Fix: HTTPXRequest + Anti Crash_\n\n"
-    txt += f"*Mode:* `{mode}`\n"
-    txt += f"*Harga:* `${price:,.2f}` | *GRID:* `${last_grid:,.2f}`\n"
-    txt += f"*Saldo:* `{usdt:.2f}` | *Posisi:* `{len(pos)}`\n"
-    txt += f"*Modal Buy:* `${modal_buy:.2f}` | *Fee:* `{taker_fee*100:.2f}%`"
-
+    txt = f"*BOT V29.16 AIOHTTP*\n*Mode:* `{mode}`\n*Harga:* `${price:,.2f}` | *GRID:* `${last_grid:,.2f}`\n*Saldo:* `{usdt:.2f}` | *Posisi:* `{len(pos)}`"
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
 async def main():
-    while True: # LOOP ANTI MATI
+    while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V29.15 START...")
+            logging.info("BOT V29.16 START...")
             await asyncio.sleep(15)
 
-            # FIX 1: PAKE HTTPXREQUEST CUSTOM TIMEOUT 10 DETIK
-            request = HTTPXRequest(connect_timeout=10, read_timeout=10)
-            app = ApplicationBuilder().token(TELE_TOKEN).request(request).build()
+            # FIX: KEMBALI KE DEFAULT AIOHTTP. JANGAN PAKE HTTPXREQUEST
+            app = ApplicationBuilder().token(TELE_TOKEN).build()
             
             app.add_handler(CommandHandler("start", status))
             app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
-            try:
-                binance = Client(API_KEY, API_SECRET, {"timeout": 5})
-                binance.ping()
-            except Exception as e:
-                logging.error(f"BINANCE GAGAL: {e}")
+            binance = Client(API_KEY, API_SECRET, {"timeout": 5})
+            binance.ping()
 
             await sinkron_db_dengan_binance()
             db = get_positions_cache(); last_grid = get_atr_grid(); base_price_start = get_price_cache()
@@ -326,20 +298,17 @@ async def main():
             await cek_pengaman_restart(base_price_start, db)
 
             app.job_queue.run_repeating(scout_loop, interval=3, first=5)
-            await app.initialize(); await app.start()
-            
-            # FIX 2: POLLING PAKE ALLOWED_UPDATES=[]
-            await app.updater.start_polling(drop_pending_updates=True, allowed_updates=[])
+            await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-            await notif_status("✅ *BOT V29.15 HTTP FIX JALAN*")
-            logging.info("BOT V29.15 JALAN...")
+            await notif_status("✅ *BOT V29.16 AIOHTTP JALAN*")
+            logging.info("BOT V29.16 JALAN...")
 
             stop = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
             await stop.wait(); await app.stop(); await app.shutdown()
             break
         except Exception as e:
-            logging.error(f"CRASH: {e}. RESTART 10 DETIK LAGI")
+            logging.error(f"CRASH: {e}. RESTART 10 DETIK")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
