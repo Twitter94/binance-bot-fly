@@ -25,7 +25,7 @@ SCOUT_INTERVAL = 3
 binance_scout = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
 
-last_grid = 400; base_price_start = 0; base_price_for_atr = 0 # DEFAULT GRID 400 BIAR GAK 0
+last_grid = 0; base_price_start = 0; base_price_for_atr = 0
 last_atr_update_day = 0
 is_executing = False; mode_flexible = True
 bot_start_time = time.time()
@@ -68,28 +68,28 @@ async def get_balance(binance_conn, asset):
     try: bal = await binance_conn.fetch_balance(); return float(bal[asset]['free'])
     except: return 0
 
-# FIX 1: GET PRICE PAKE PUBLIC
 async def get_price(binance_conn):
     try:
         r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5)
         return float(r.json()['price'])
     except: return 0
 
-# FIX 2: ATR PAKE PUBLIC JUGA BIAR GAK CRASH
-async def get_atr_grid(binance_conn):
+# FIX: UPDATE SEKARANG + JAM 00:00 + CADANGAN 20%
+async def get_atr_grid(binance_conn, force_update=False):
     global last_grid, last_atr_update_day, base_price_for_atr
     now = time.time()
     current_day = time.localtime(now).tm_yday
     price = await get_price(binance_conn)
     if price == 0: return last_grid
 
-    harus_update = False
-    alasan = ""
+    harus_update = force_update # KALAU FORCE = TRUE LANGSUNG UPDATE
+    alasan = "START BOT"
 
     if current_day!= last_atr_update_day:
         harus_update = True
-        alasan = "JAM 00:00"
+        alasan = "JAM 00:00 RESET"
         last_atr_update_day = current_day
+
     elif base_price_for_atr > 0:
         perubahan = abs(price - base_price_for_atr) / base_price_for_atr
         if perubahan >= 0.20:
@@ -98,21 +98,21 @@ async def get_atr_grid(binance_conn):
 
     if harus_update:
         try:
-            # PAKE API PUBLIC KLINE
             url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit={ATR_PERIOD+1}"
             r = requests.get(url, timeout=5)
             data = r.json()
             closes = [float(c[4]) for c in data]
             tr = [abs(closes[i]-closes[i-1]) for i in range(1,len(closes))]
             atr = sum(tr)/len(tr) if tr else 500
-            grid_baru = max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
+            grid_baru = max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER))) # 250-1000
+            
             if grid_baru!= last_grid:
                 await notif_event(f"📊 ATR UPDATE [{alasan}]: Grid `{last_grid:,.0f}` → `{grid_baru:,.0f}`")
             last_grid = grid_baru
             base_price_for_atr = price
         except Exception as e: 
             logging.error(f"Gagal update ATR: {e}")
-            await notif_status(f"⚠️ GAGAL UPDATE ATR: {e}")
+            if last_grid == 0: last_grid = 400 # JAGA2 KALAU GAGAL
     return last_grid
 
 async def get_qty_aman(binance_conn, price):
@@ -240,7 +240,7 @@ async def scout_loop():
     while not stop_event.is_set():
         if not is_executing:
             try:
-                await get_atr_grid(binance_scout)
+                await get_atr_grid(binance_scout) # CEK UPDATE TIAP 3 DETIK
                 price = await get_price(binance_scout)
                 if price == 0: raise Exception("Harga 0")
                 if error_notified["binance"]:
@@ -298,7 +298,7 @@ async def handle_webhook(request):
                 for p in buy_list: b = p['buy_price']; s = b + last_grid; posisi_txt += f"`B{b:,.0f} - S{s:,.0f}` | A:`{p['area']:,.0f}` | Q:`{p['qty']}`\n"
             else: posisi_txt = "`- Belum ada posisi -`"
             saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else f"⚠️ KURANG {modal_butuh_kasar-usdt:.2f}"
-            txt = f"*BOT V30.3.4*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{usdt:.2f}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
+            txt = f"*BOT V30.3.6*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{usdt:.2f}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
             await notif_status(txt)
         finally: await binance_temp.close()
     return web.Response(text="ok")
@@ -311,7 +311,10 @@ async def main():
 
     try:
         base_price_start = await get_price(binance_scout)
-        last_grid = await get_atr_grid(binance_scout) # INI UDAH PAKE PUBLIC
+        
+        # FIX: FORCE UPDATE ATR PAS START
+        last_grid = await get_atr_grid(binance_scout, force_update=True)
+        
         base_price_for_atr = base_price_start
         last_atr_update_day = time.localtime(time.time()).tm_yday
 
@@ -326,7 +329,7 @@ async def main():
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
         requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"}, timeout=5)
-        await notif_status(f"✅ *BOT V30.3.4 24JAM JALAN*\nGrid: `${last_grid:,.0f}`")
+        await notif_status(f"✅ *BOT V30.3.6 24JAM JALAN*\nGrid Awal: `${last_grid:,.0f}` | Range: 250-1000")
 
         await scout_loop()
     finally:
