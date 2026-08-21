@@ -1,4 +1,4 @@
-import os, time, math, requests, logging, signal, asyncio, gc
+import os, time, math, requests, logging, signal, asyncio, gc, resource
 from binance.client import Client
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -18,6 +18,7 @@ MIN_USDT = 5
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
+FEE_KASAR = 0.0011 # 0.11% UNTUK HITUNGAN STATUS SAJA
 
 binance = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -27,10 +28,10 @@ is_executing = False; mode_flexible = True
 last_status_msg = ""
 bot_start_time = time.time()
 
-last_fee_check = 0; cached_taker_fee = 0.001
+last_fee_check = 0; cached_taker_fee = 0.0011 # default 0.11%
 cached_price = 0; cached_price_time = 0
 cached_positions = []; cached_pos_time = 0
-cached_symbol_info = None; cached_atr_grid = 500
+cached_atr_grid = 500
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
 def supa_req(m,u,**k):
@@ -43,7 +44,7 @@ def get_positions():
 
 def get_positions_cache():
     global cached_positions, cached_pos_time
-    if time.time() - cached_pos_time < 2:
+    if time.time() - cached_pos_time < 3:
         return cached_positions
     cached_positions = get_positions()
     cached_pos_time = time.time()
@@ -55,29 +56,18 @@ def get_balance(asset):
     try: return float(binance.get_asset_balance(asset)['free'])
     except: return 0
 
-def get_price():
-    try: return float(binance.get_symbol_ticker(symbol=PAIR)['price'])
-    except: return 0
-
 def get_price_cache():
     global cached_price, cached_price_time
-    if time.time() - cached_price_time < 2:
+    if time.time() - cached_price_time < 3:
         return cached_price
-    cached_price = get_price()
+    try: cached_price = float(binance.get_symbol_ticker(symbol=PAIR)['price'])
+    except: cached_price = 0
     cached_price_time = time.time()
     return cached_price
 
 def get_binance_balance_coin():
     try: return float(binance.get_asset_balance(PAIR.replace("USDT",""))['free'])
     except: return 0
-
-def get_symbol_info_cache():
-    global cached_symbol_info
-    if cached_symbol_info: return cached_symbol_info
-    try:
-        cached_symbol_info = binance.get_symbol_info(PAIR)
-        return cached_symbol_info
-    except: return None
 
 def get_atr_grid():
     global cached_atr_grid
@@ -92,25 +82,24 @@ def get_atr_grid():
 
 def get_qty_aman(price):
     try:
-        info = get_symbol_info_cache()
-        if not info: return QTY_FIXED
+        info = binance.get_symbol_info(PAIR)
         step = float(next(f['stepSize'] for f in info['filters'] if f['filterType']=='LOT_SIZE'))
         qty_by_usdt = math.ceil(MIN_USDT/price/step)*step
         qty = max(qty_by_usdt, QTY_FIXED)
         return round(qty, 8)
     except: return QTY_FIXED
 
-def get_fee_binance():
+def get_fee_binance(): # INI BUAT BUY/SELL BENERAN. LANGSUNG DARI BINANCE
     global last_fee_check, cached_taker_fee
     if time.time() - last_fee_check < 3600:
-        return 0.001, cached_taker_fee
+        return 0.0011, cached_taker_fee
     try:
         info = binance.get_trade_fee(symbol=PAIR)
-        cached_taker_fee = float(info['tradeFee'][0]['taker'])
+        cached_taker_fee = float(info['tradeFee'][0]['taker']) / 10000 # Binance return 11 = 0.0011
         last_fee_check = time.time()
-        return 0.001, cached_taker_fee
+        return 0.0011, cached_taker_fee
     except:
-        return 0.001, 0.001
+        return 0.0011, 0.0011
 
 KEYBOARD = ReplyKeyboardMarkup([[KeyboardButton("STATUS")]], resize_keyboard=True)
 
@@ -136,16 +125,16 @@ async def sinkron_db_dengan_binance():
         await notif_status(f"SYNC: DB `{total_qty_db:.8f}` vs BINANCE `{balance_coin:.8f}`. RESET DB")
         supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
 
-async def satpam_buy(price, area, reason="GRID"):
+async def satpam_buy(price, area, reason="GRID"): # PAKE FEE ASLI BINANCE
     global is_executing, mode_flexible
     if is_executing: return
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
         qty = get_qty_aman(price)
-        _, taker_fee = get_fee_binance()
-        usdt_need = price * qty * (1 + taker_fee + BUFFER)
-        await notif_event(f"🟢 BUY [{reason}] @`{price:.2f}` AREA `{area}` | QTY `{qty}`")
+        _, taker_fee_asli = get_fee_binance() # AMBIL FEE BENERAN
+        usdt_need = price * qty * (1 + taker_fee_asli + taker_fee_asli + BUFFER)
+        await notif_event(f"🟢 BUY [{reason}] @`{price:.2f}` AREA `{area}` | QTY `{qty}` | Fee `{taker_fee_asli*100:.3f}%`")
         if get_balance("USDT") < usdt_need:
             if not await cek_dana_dan_jual(usdt_need, price): return
         order = binance.order_market_buy(symbol=PAIR, quantity=qty)
@@ -159,20 +148,20 @@ async def satpam_buy(price, area, reason="GRID"):
         await notif_status(f"⚠️ BUY GAGAL: `{e}`")
     finally: is_executing = False
 
-async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"):
+async def satpam_sell_area(area, positions_in_area, price, mode="BIASA"): # PAKE FEE ASLI BINANCE
     global is_executing
     if is_executing: return
     is_executing = True
     try:
         await sinkron_db_dengan_binance()
         total_qty = sum(p['qty'] for p in positions_in_area)
-        _, taker_fee = get_fee_binance()
-        await notif_event(f"🔴 SELL [{mode}] AREA `{area}` @`{price:.2f}`")
+        _, taker_fee_asli = get_fee_binance() # AMBIL FEE BENERAN
+        await notif_event(f"🔴 SELL [{mode}] AREA `{area}` @`{price:.2f}` | Fee `{taker_fee_asli*100:.3f}%`")
         order = binance.order_market_sell(symbol=PAIR, quantity=total_qty)
         if order['status']== 'FILLED':
             supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}&area=eq.{area}")
             avg_buy = sum(p['buy_price']*p['qty'] for p in positions_in_area) / total_qty
-            profit = (price - avg_buy) * total_qty * (1 - taker_fee - BUFFER)
+            profit = (price - avg_buy) * total_qty * (1 - taker_fee_asli - BUFFER)
             await notif_event(f"🔴 SELL SELESAI. PROFIT `~{profit:.2f}`")
     except Exception as e:
         await notif_status(f"⚠️ SELL GAGAL: `{e}`")
@@ -185,13 +174,13 @@ async def satpam_sell_instansemua(all_positions, price):
     try:
         await sinkron_db_dengan_binance()
         total_qty = sum(p['qty'] for p in all_positions)
-        _, taker_fee = get_fee_binance()
-        await notif_event(f"🔴 SELL INSTAN @`{price:.2f}`")
+        _, taker_fee_asli = get_fee_binance()
+        await notif_event(f"🔴 SELL INSTAN @`{price:.2f}` | Fee `{taker_fee_asli*100:.3f}%`")
         order = binance.order_market_sell(symbol=PAIR, quantity=total_qty)
         if order['status']== 'FILLED':
             supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR}")
             avg_buy = sum(p['buy_price']*p['qty'] for p in all_positions) / total_qty
-            profit = (price - avg_buy) * total_qty * (1 - taker_fee)
+            profit = (price - avg_buy) * total_qty * (1 - taker_fee_asli)
             await notif_event(f"🔴 SELL INSTAN SELESAI. PROFIT `~{profit:.2f}`")
             await asyncio.sleep(1)
             await satpam_buy(price, get_area(price, last_grid), reason="REENTRY-INSTAN")
@@ -266,48 +255,46 @@ async def scout_loop(context: ContextTypes.DEFAULT_TYPE):
     finally:
         gc.collect()
 
-# === INI FUNGSI STATUS BARU ===
+# === STATUS HITUNGAN KASAR 0.11% + 0.11% ===
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sinkron_db_dengan_binance()
-    price = get_price_cache()
+    price = cached_price
     usdt = get_balance("USDT")
-    pos = get_positions_cache()
+    pos = cached_positions
     mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
 
-    # Hitung modal butuh 1x buy
-    qty_next = get_qty_aman(price)
-    _, taker_fee = get_fee_binance()
-    modal_butuh = price * qty_next * (1 + taker_fee*2 + BUFFER)
+    qty_kasar = get_qty_aman(price) # qty tetep akurat
+    modal_butuh_kasar = price * qty_kasar * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
 
-    # Bikin list posisi Buy-Sell
     posisi_txt = ""
     if pos:
         buy_list = sorted([p['buy_price'] for p in pos], reverse=True)
         for b in buy_list:
-            s = b + last_grid # TP KOTOR
+            s = b + last_grid
             posisi_txt += f"`B{b:,.0f} - S{s:,.0f}`\n"
     else:
         posisi_txt = "`-`"
 
     txt = (
-        f"*BOT V29.17.2*\n"
+        f"*BOT V29.17.4*\n"
         f"_Mode: {mode}_\n\n"
         f"*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n"
-        f"*Modal Butuh:* `${modal_butuh:.2f}` | *Saldo:* `{usdt:.2f}`\n\n"
+        f"*Modal Butuh:* `~{modal_butuh_kasar:.2f}` | *Saldo:* `{usdt:.2f}`\n"
+        f"_Fee Kasar: 0.11% + 0.11%_\n\n"
         f"*POSISI:* `{len(pos)}`\n"
         f"{posisi_txt}"
     )
     await update.message.reply_text(txt, reply_markup=KEYBOARD, parse_mode="Markdown")
 
 async def main():
+    resource.setrlimit(resource.RLIMIT_AS, (200 * 1024 * 1024, 200 * 1024 * 1024))
     while True:
         try:
             global app, last_grid, base_price_start, mode_flexible, binance
-            logging.info("BOT V29.17.2 START...")
+            logging.info("BOT V29.17.4 START...")
             await asyncio.sleep(15)
 
             app = ApplicationBuilder().token(TELE_TOKEN).build()
-
             app.add_handler(CommandHandler("start", status))
             app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^STATUS$'), status))
 
@@ -320,11 +307,11 @@ async def main():
 
             await cek_pengaman_restart(base_price_start, db)
 
-            app.job_queue.run_repeating(scout_loop, interval=3, first=5)
+            app.job_queue.run_repeating(scout_loop, interval=5, first=5)
             await app.initialize(); await app.start(); await app.updater.start_polling(drop_pending_updates=True)
 
-            await notif_status("✅ *BOT V29.17.2 JALAN*")
-            logging.info("BOT V29.17.2 JALAN...")
+            await notif_status("✅ *BOT V29.17.4 JALAN*")
+            logging.info("BOT V29.17.4 JALAN...")
 
             stop = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM): asyncio.get_running_loop().add_signal_handler(sig, stop.set)
