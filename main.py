@@ -15,7 +15,7 @@ SUPA_KEY = os.getenv("SUPA_KEY")
 FLY_URL = os.getenv("FLY_URL")
 
 MIN_GRID = 250; MAX_GRID = 1000; QTY_FIXED = 0.00001
-MIN_USDT = 5
+MIN_USDT = 5 # <--- INI MODAL PER LAYER KAMU. MAU 10/20 TINGGAL GANTI
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 SELISIH_TOLERANSI = 0.00001
 DELAY_FIRST_BUY = 1800
@@ -64,12 +64,11 @@ def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 el
 def area_aktif(area, positions): return any(p['area'] == area for p in positions)
 def get_pos_by_area(area, positions): return [p for p in positions if p['area'] == area]
 
-# FIX: KALAU GAGAL RETURN -1
 async def get_balance(binance_conn, asset):
-    try: 
+    try:
         bal = await binance_conn.fetch_balance()
         return float(bal[asset]['free'])
-    except Exception as e: 
+    except Exception as e:
         logging.error(f"Gagal ambil balance: {e}")
         return -1
 
@@ -108,12 +107,12 @@ async def get_atr_grid(binance_conn, force_update=False):
             tr = [abs(closes[i]-closes[i-1]) for i in range(1,len(closes))]
             atr = sum(tr)/len(tr) if tr else 500
             grid_baru = max(MIN_GRID, min(MAX_GRID, round(atr * ATR_MULTIPLIER)))
-            
+
             if grid_baru!= last_grid:
                 await notif_event(f"📊 ATR UPDATE [{alasan}]: Grid `{last_grid:,.0f}` → `{grid_baru:,.0f}`")
             last_grid = grid_baru
             base_price_for_atr = price
-        except Exception as e: 
+        except Exception as e:
             logging.error(f"Gagal update ATR: {e}")
             if last_grid == 0: last_grid = 400
     return last_grid
@@ -148,7 +147,7 @@ async def notif_status(msg):
 async def sinkron_db_dengan_binance(binance_conn):
     positions_db = get_positions_cache()
     balance_coin = await get_balance(binance_conn, PAIR.split('/')[0])
-    if balance_coin == -1: return # SKIP KALAU GAGAL AMBIL
+    if balance_coin == -1: return
     total_qty_db = sum(p['qty'] for p in positions_db)
     if abs(balance_coin - total_qty_db) > SELISIH_TOLERANSI:
         await notif_status(f"SYNC: DB `{total_qty_db:.8f}` vs BINANCE `{balance_coin:.8f}`. RESET DB")
@@ -283,7 +282,7 @@ async def scout_loop():
             finally: gc.collect()
         await asyncio.sleep(SCOUT_INTERVAL)
 
-# FIX: HANDLE SALDO GAGAL
+# FIX: MODAL/LAYER SEKARANG JELAS
 async def handle_webhook(request):
     data = await request.json()
     msg = data.get("message", {})
@@ -296,16 +295,14 @@ async def handle_webhook(request):
             price = await get_price(binance_temp)
             pos = get_positions_cache()
             usdt = await get_balance(binance_temp, "USDT")
-            qty_kasar = await get_qty_aman(binance_temp, price)
-            modal_butuh_kasar = price * qty_kasar * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
+            modal_butuh_kasar = MIN_USDT * (1 + FEE_KASAR + FEE_KASAR + BUFFER) # FIX INI
             mode = "FLEXIBLE" if mode_flexible else "GRID-KLASIK"
             posisi_txt = ""
             if pos:
                 buy_list = sorted(pos, key=lambda x: x['buy_price'], reverse=True)
                 for p in buy_list: b = p['buy_price']; s = b + last_grid; posisi_txt += f"`B{b:,.0f} - S{s:,.0f}` | A:`{p['area']:,.0f}` | Q:`{p['qty']}`\n"
             else: posisi_txt = "`- Belum ada posisi -`"
-            
-            # FIX SALDO
+
             if usdt == -1:
                 saldo_txt = "???"
                 saldo_status = "⚠️ GAGAL AMBIL - CEK BINANCE LANGSUNG"
@@ -313,7 +310,7 @@ async def handle_webhook(request):
                 saldo_txt = f"{usdt:.2f}"
                 saldo_status = "✅ AMAN" if usdt >= modal_butuh_kasar else f"⚠️ KURANG {modal_butuh_kasar-usdt:.2f}"
 
-            txt = f"*BOT V30.3.7*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{saldo_txt}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
+            txt = f"*BOT V30.3.8*\n_Mode: {mode} | Grid: ${last_grid:,.0f}_\n\n*Harga:* `${price:,.2f}`\n*Saldo:* `{saldo_txt}` {saldo_status}\n*Modal/Layer:* `~{modal_butuh_kasar:.2f}`\n\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
             await notif_status(txt)
         finally: await binance_temp.close()
     return web.Response(text="ok")
@@ -341,7 +338,7 @@ async def main():
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
         requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"}, timeout=5)
-        await notif_status(f"✅ *BOT V30.3.7 24JAM JALAN*\nGrid Awal: `${last_grid:,.0f}` | Range: 250-1000")
+        await notif_status(f"✅ *BOT V30.3.8 24JAM JALAN*\nGrid Awal: `${last_grid:,.0f}` | Range: 250-1000")
 
         await scout_loop()
     finally:
