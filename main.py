@@ -142,13 +142,16 @@ async def aksi_buy(price, area, reason):
     try:
         qty = await get_qty_aman(binance_scout, price)
         fee = await get_fee_live(binance_scout)
-        usdt_need = price * qty * (1 + fee + fee + BUFFER)
+        
+        modal_kotor = price * qty # <--- HARGA x QTY
+        modal_butuh = modal_kotor * (1 + fee + fee + BUFFER) # <--- + FEE + FEE + BUFFER
+        
         saldo = await get_balance(binance_scout, "USDT")
 
-        await notif(f"🟡 CEK BUY [{reason}] QTY:`{qty}` BUTUH:`${usdt_need:.2f}` SALDO:`${saldo:.2f}`")
+        await notif(f"🟡 CEK BUY [{reason}]\nHarga:`${price:,.2f}` | Qty:`{qty}`\nModal Lot:`${modal_kotor:.2f}`\nButuh Total:`${modal_butuh:.2f}` | Saldo:`${saldo:.2f}`")
 
-        if saldo < usdt_need:
-            await notif(f"⚠️ BUY GAGAL: SALDO KURANG `${usdt_need-saldo:.2f}`")
+        if saldo < modal_butuh:
+            await notif(f"⚠️ BUY GAGAL: SALDO KURANG `${modal_butuh-saldo:.2f}`")
             return
 
         order = await binance_scout.create_market_buy_order(PAIR, qty)
@@ -157,7 +160,7 @@ async def aksi_buy(price, area, reason):
             await notif(f"🟢 BUY SUKSES [{reason}] @`{price:.2f}`")
             mode_flexible = False
     except Exception as e: 
-        await notif(f"⚠️ BUY GAGAL: `{str(e)}`") # KELUARIN ERROR ASLI BINANCE
+        await notif(f"⚠️ BUY GAGAL: `{str(e)}`")
         logging.error(f"BUY ERROR: {e}")
     finally: is_executing = False
 
@@ -203,11 +206,17 @@ async def handle_webhook(request): # FIX: ANTI MATI
             try:
                 await binance_temp.load_markets()
                 price = await get_price(); pos = await get_positions_live(binance_temp); usdt = await get_balance(binance_temp, "USDT")
-                qty_layer = await get_qty_aman(binance_temp, price); modal = price * qty_layer * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
+                qty_layer = await get_qty_aman(binance_temp, price)
+                
+                modal_kotor = price * qty_layer # <--- TAMBAH
+                modal_butuh = modal_kotor * (1 + FEE_KASAR + FEE_KASAR + BUFFER) # <--- TAMBAH
+                
                 posisi_txt = "".join([f"`B{p['buy_price']:,.0f} - S{p['buy_price']+last_grid:,.0f}` | A:`{p['area']:,.0f}` | Q:`{p['qty']}`\n" for p in sorted(pos, key=lambda x: x['buy_price'], reverse=True)]) or "`- Belum ada posisi -`"
-                txt = f"*BOT V30.3.15 FIX*\n*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n*Saldo:* `{usdt:.2f}` | *Modal/Layer:* `~{modal:.2f}` | *Qty:* `{qty_layer}`\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
+                txt = f"*BOT V30.3.17*\n*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n*Saldo:* `{usdt:.2f}` \n*Modal/Lot:* `${modal_kotor:.2f}`\n*Butuh/Lot:* `${modal_butuh:.2f}` | *Qty:* `{qty_layer}`\n*POSISI:* `{len(pos)}`\n{posisi_txt}" # <--- UDAH DIUBAH
                 await notif(txt)
             finally: await binance_temp.close()
+        else:
+            await notif(f"Ketik `STATUS` untuk laporan")
     except Exception as e: logging.error(f"WEBHOOK ERROR: {e}")
     return web.Response(text="ok")
 
@@ -223,7 +232,7 @@ async def main():
     app = web.Application(); app.router.add_post(f"/{TELE_TOKEN}", handle_webhook)
     runner = web.AppRunner(app); await runner.setup(); site = web.TCPSite(runner, '0.0.0.0', 8080); await site.start()
     requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"})
-    await notif(f"✅ *BOT V30.3.15 FIX JALAN*\nQty Min:`{MIN_QTY}` | $ Min:`{MIN_USDT}`")
+    await notif(f"✅ *BOT V30.3.17 JALAN*\nQty Min:`{MIN_QTY}` | $ Min:`{MIN_USDT}`")
 
     await scout_loop()
 
