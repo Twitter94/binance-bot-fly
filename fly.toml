@@ -1,8 +1,8 @@
 app = "bahaya"
-primary_region = "sin"
-
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = false
-  min_machines_running = 1
+[build]
+[processes]
+app = "python main.py"
+[[vm]]
+memory = "256mb"
+cpu_kind = "shared"
+cpus = 1
