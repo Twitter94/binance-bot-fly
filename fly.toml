@@ -8,4 +8,4 @@ cpu_kind = "shared"
 cpus = 1
 [env]
   PYTHONUNBUFFERED = "1"
-  PYTHONDONTWRITEBYTECODE = "1"
+  
