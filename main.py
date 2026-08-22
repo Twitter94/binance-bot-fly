@@ -15,11 +15,12 @@ SUPA_KEY = os.getenv("SUPA_KEY")
 FLY_URL = os.getenv("FLY_URL")
 
 MIN_GRID = 250; MAX_GRID = 1000
-MIN_USDT = 5
+MIN_USDT = 5 # WAJIB 5
+MIN_QTY = 0.00001 # WAJIB 0.00001 SESUAI KAMU
 ATR_MULTIPLIER = 0.5; ATR_PERIOD = 14; BUFFER = 0.0005
 DELAY_FIRST_BUY = 1800
 FEE_KASAR = 0.0011
-SCOUT_INTERVAL = 3 # RUMAH CEK HARGA TIAP 3 DETIK
+SCOUT_INTERVAL = 3
 
 binance_scout = None
 SUPA_HEADERS = {"apikey": SUPA_KEY, "Authorization": f"Bearer {SUPA_KEY}", "Content-Type": "application/json"}
@@ -30,22 +31,22 @@ is_executing = False; mode_flexible = True
 bot_start_time = time.time()
 stop_event = asyncio.Event()
 
-def supa_req(m,u,**k): # KAMAR ARSIP - CUMA DIPANGGIL PAS PERLU
+def supa_req(m,u,**k):
     try: return requests.request(m,u,headers=SUPA_HEADERS,timeout=5,**k)
-    except: return None
+    except Exception as e: logging.error(f"SUPA ERROR: {e}"); return None
 
 def get_area(price, grid): return math.floor(price / grid) * grid if grid > 0 else 0
 def get_pos_by_area(area, positions): return [p for p in positions if p['area'] == area]
 
-async def get_balance(binance_conn, asset): # KAMAR TRADING
+async def get_balance(binance_conn, asset):
     try: return float((await binance_conn.fetch_balance())[asset]['free'])
     except: return -1
 
-async def get_price(): # RUMAH CEK HARGA - TIDAK LOGIN
+async def get_price():
     try: return float(requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5).json()['price'])
     except: return 0
 
-async def get_atr_grid(force_update=False): # RUMAH HITUNG GRID - TIDAK LOGIN
+async def get_atr_grid(force_update=False):
     global last_grid, last_atr_update_day, base_price_for_atr
     current_day = time.localtime().tm_yday
     price = await get_price()
@@ -66,68 +67,77 @@ async def get_atr_grid(force_update=False): # RUMAH HITUNG GRID - TIDAK LOGIN
             if last_grid == 0: last_grid = 400
     return last_grid
 
-async def get_qty_aman(binance_conn, price): # KAMAR TRADING - CUMA PAS BUY
-    await binance_conn.load_markets()
-    m = binance_conn.market(PAIR); step = m['limits']['amount']['min']; min_notional = m['limits']['cost']['min']
-    qty = math.ceil((MIN_USDT / price) / step) * step
-    if price * qty < min_notional: qty = math.ceil(min_notional / price / step) * step
-    return round(qty, 8)
+async def get_qty_aman(binance_conn, price): # FIX: PAKSA 2 ATURAN
+    try:
+        await binance_conn.load_markets()
+        m = binance_conn.market(PAIR); step = m['limits']['amount']['min']; min_notional = m['limits']['cost']['min']
+        
+        qty = math.ceil((MIN_USDT / price) / step) * step # hitung dari $5
+        
+        if qty < MIN_QTY: qty = MIN_QTY # PAKSA 0.00001
+        if price * qty < min_notional: qty = math.ceil(min_notional / price / step) * step # PAKSA $5
+        
+        return round(qty, 8)
+    except Exception as e:
+        logging.error(f"Gagal hitung qty: {e}")
+        return MIN_QTY # JAGA2
 
-async def get_fee_live(binance_conn): # KAMAR TRADING - CUMA PAS BUY/SELL
+async def get_fee_live(binance_conn):
     try: return float((await binance_conn.fetch_trading_fee(PAIR))['taker'])
     except: return 0.0011
 
-async def notif(msg): # POS SATPAM
+async def notif(msg):
     try: requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", json={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=5)
     except: pass
 
-async def get_positions_live(binance_conn): # KAMAR ARSIP - CUMA PAS PERLU
+async def get_positions_live(binance_conn):
     r = supa_req("GET", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}&order=buy_price.asc")
     return r.json() if r and r.status_code==200 else []
 
-# RUMAH CUMA MANTU. GAK SENTUH KAMAR LAIN
 async def scout_loop():
     global last_grid, mode_flexible
     while not stop_event.is_set():
         if not is_executing:
-            await get_atr_grid()
-            price = await get_price()
+            try:
+                await get_atr_grid()
+                price = await get_price()
 
-            if price > 0:
-                positions = await get_positions_live(binance_scout) # CEK ARSIP 1X DOANG
+                if price > 0:
+                    positions = await get_positions_live(binance_scout)
 
-                # LOGIKA MOMENT
-                if not positions: # MOMENT 1: AUTO START
-                    if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
-                        await aksi_buy(price, get_area(price, last_grid), "AUTO-START")
-                else:
-                    area_tertinggi = max(p['area'] for p in positions)
-                    if price >= area_tertinggi + last_grid: # MOMENT 2: SELL INSTAN
-                        await aksi_sell_instan(price, positions)
+                    if not positions:
+                        if mode_flexible and (time.time() - bot_start_time) >= DELAY_FIRST_BUY:
+                            await aksi_buy(price, get_area(price, last_grid), "AUTO-START")
                     else:
-                        moment_ketemu = False
-                        for area in set(p['area'] for p in positions):
-                            pos_in_area = get_pos_by_area(area, positions)
-                            buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
-                            if price >= buy_terendah_area + last_grid: # MOMENT 3: SELL
-                                area_atas = get_area(price + last_grid, last_grid)
-                                if any(p['area'] == area_atas for p in positions): # ADA AREA ATAS = SELL BIASA
-                                    await aksi_sell_area(price, area, pos_in_area, "BIASA")
-                                else: # GAK ADA AREA ATAS = SELL REENTRY
-                                    await aksi_sell_area(price, area, pos_in_area, "REENTRY")
-                                    await aksi_buy(price, get_area(price, last_grid), "RE-ENTRY")
-                                moment_ketemu = True; break
-                        if not moment_ketemu: # MOMENT 4: BUY GRID
-                            buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
-                            if price <= buy_trigger:
-                                area = get_area(price, last_grid)
-                                if not any(p['area'] == area for p in positions):
-                                    await aksi_buy(price, area, "GRID")
+                        area_tertinggi = max(p['area'] for p in positions)
+                        if price >= area_tertinggi + last_grid:
+                            await aksi_sell_instan(price, positions)
+                        else:
+                            moment_ketemu = False
+                            for area in set(p['area'] for p in positions):
+                                pos_in_area = get_pos_by_area(area, positions)
+                                buy_terendah_area = min(p['buy_price'] for p in pos_in_area)
+                                if price >= buy_terendah_area + last_grid:
+                                    area_atas = get_area(price + last_grid, last_grid)
+                                    if any(p['area'] == area_atas for p in positions):
+                                        await aksi_sell_area(price, area, pos_in_area, "BIASA")
+                                    else:
+                                        await aksi_sell_area(price, area, pos_in_area, "REENTRY")
+                                        await aksi_buy(price, get_area(price, last_grid), "RE-ENTRY")
+                                    moment_ketemu = True; break
+                            if not moment_ketemu:
+                                buy_trigger = min([p['buy_price'] for p in positions]) - last_grid
+                                if price <= buy_trigger:
+                                    area = get_area(price, last_grid)
+                                    if not any(p['area'] == area for p in positions):
+                                        await aksi_buy(price, area, "GRID")
+            except Exception as e: logging.error(f"SCOUT ERROR: {e}")
+            finally: gc.collect()
         await asyncio.sleep(SCOUT_INTERVAL)
 
-# AKSI 1: BUY - RUMAH PANGGIL KAMAR TRADING -> ARSIP -> SATPAM
 async def aksi_buy(price, area, reason):
     global is_executing, mode_flexible
+    if is_executing: return
     is_executing = True
     try:
         qty = await get_qty_aman(binance_scout, price)
@@ -135,34 +145,41 @@ async def aksi_buy(price, area, reason):
         usdt_need = price * qty * (1 + fee + fee + BUFFER)
         saldo = await get_balance(binance_scout, "USDT")
 
-        if saldo >= usdt_need:
-            order = await binance_scout.create_market_buy_order(PAIR, qty) # PANGGIL KAMAR TRADING
-            if order['status']== 'closed':
-                supa_req("POST", f"{SUPA_URL}/rest/v1/positions", json={"pair":PAIR_BINANCE,"area":area,"buy_price":price,"qty":qty,"order_id":str(order['id'])}) # PANGGIL KAMAR ARSIP
-                await notif(f"🟢 BUY [{reason}] @`{price:.2f}` | QTY `{qty}`") # PANGGIL SATPAM
-                mode_flexible = False
-    except Exception as e: await notif(f"⚠️ BUY GAGAL: `{e}`")
+        await notif(f"🟡 CEK BUY [{reason}] QTY:`{qty}` BUTUH:`${usdt_need:.2f}` SALDO:`${saldo:.2f}`")
+
+        if saldo < usdt_need:
+            await notif(f"⚠️ BUY GAGAL: SALDO KURANG `${usdt_need-saldo:.2f}`")
+            return
+
+        order = await binance_scout.create_market_buy_order(PAIR, qty)
+        if order['status']== 'closed':
+            supa_req("POST", f"{SUPA_URL}/rest/v1/positions", json={"pair":PAIR_BINANCE,"area":area,"buy_price":price,"qty":qty,"order_id":str(order['id'])})
+            await notif(f"🟢 BUY SUKSES [{reason}] @`{price:.2f}`")
+            mode_flexible = False
+    except Exception as e: 
+        await notif(f"⚠️ BUY GAGAL: `{str(e)}`") # KELUARIN ERROR ASLI BINANCE
+        logging.error(f"BUY ERROR: {e}")
     finally: is_executing = False
 
-# AKSI 2: SELL AREA - RUMAH PANGGIL KAMAR TRADING -> ARSIP -> SATPAM
 async def aksi_sell_area(price, area, positions_in_area, mode):
     global is_executing
+    if is_executing: return
     is_executing = True
     try:
         total_qty = sum(p['qty'] for p in positions_in_area)
         fee = await get_fee_live(binance_scout)
-        order = await binance_scout.create_market_sell_order(PAIR, total_qty) # PANGGIL KAMAR TRADING
+        order = await binance_scout.create_market_sell_order(PAIR, total_qty)
         if order['status']== 'closed':
-            supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}&area=eq.{area}") # PANGGIL KAMAR ARSIP
+            supa_req("DELETE", f"{SUPA_URL}/rest/v1/positions?pair=eq.{PAIR_BINANCE}&area=eq.{area}")
             avg_buy = sum(p['buy_price']*p['qty'] for p in positions_in_area) / total_qty
             profit = (price - avg_buy) * total_qty * (1 - fee)
-            await notif(f"🔴 SELL [{mode}] @`{price:.2f}` PROFIT `~{profit:.2f}`") # PANGGIL SATPAM
-    except Exception as e: await notif(f"⚠️ SELL GAGAL: `{e}`")
+            await notif(f"🔴 SELL [{mode}] @`{price:.2f}` PROFIT `~{profit:.2f}`")
+    except Exception as e: await notif(f"⚠️ SELL GAGAL: `{str(e)}`")
     finally: is_executing = False
 
-# AKSI 3: SELL INSTAN - RUMAH PANGGIL KAMAR TRADING -> ARSIP -> SATPAM -> BUY
 async def aksi_sell_instan(price, all_positions):
     global is_executing
+    if is_executing: return
     is_executing = True
     try:
         total_qty = sum(p['qty'] for p in all_positions)
@@ -175,21 +192,23 @@ async def aksi_sell_instan(price, all_positions):
             await notif(f"🔴 SELL INSTAN @`{price:.2f}` PROFIT `~{profit:.2f}`")
             await asyncio.sleep(1)
             await aksi_buy(price, get_area(price, last_grid), "REENTRY-INSTAN")
-    except Exception as e: await notif(f"⚠️ SELL INSTAN GAGAL: `{e}`")
+    except Exception as e: await notif(f"⚠️ SELL INSTAN GAGAL: `{str(e)}`")
     finally: is_executing = False
 
-async def handle_webhook(request): # TOMBOL STATUS = LAPORAN KE PEMILIK RUMAH
-    data = await request.json()
-    if str(data.get("message", {}).get("chat", {}).get("id")) == TELE_CHAT_ID and "STATUS" in data.get("message", {}).get("text", "").upper():
-        binance_temp = ccxt.binance({'apiKey': API_KEY,'secret': API_SECRET,'enableRateLimit': True})
-        try:
-            await binance_temp.load_markets()
-            price = await get_price(); pos = await get_positions_live(binance_temp); usdt = await get_balance(binance_temp, "USDT")
-            qty_layer = await get_qty_aman(binance_temp, price); modal = price * qty_layer * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
-            posisi_txt = "".join([f"`B{p['buy_price']:,.0f} - S{p['buy_price']+last_grid:,.0f}` | A:`{p['area']:,.0f}`\n" for p in sorted(pos, key=lambda x: x['buy_price'], reverse=True)]) or "`- Belum ada posisi -`"
-            txt = f"*BOT V30.3.12 RUMAH DIEM*\n*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n*Saldo:* `{usdt:.2f}` | *Modal/Layer:* `~{modal:.2f}`\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
-            await notif(txt)
-        finally: await binance_temp.close()
+async def handle_webhook(request): # FIX: ANTI MATI
+    try:
+        data = await request.json()
+        if str(data.get("message", {}).get("chat", {}).get("id")) == TELE_CHAT_ID and "STATUS" in data.get("message", {}).get("text", "").upper():
+            binance_temp = ccxt.binance({'apiKey': API_KEY,'secret': API_SECRET,'enableRateLimit': True})
+            try:
+                await binance_temp.load_markets()
+                price = await get_price(); pos = await get_positions_live(binance_temp); usdt = await get_balance(binance_temp, "USDT")
+                qty_layer = await get_qty_aman(binance_temp, price); modal = price * qty_layer * (1 + FEE_KASAR + FEE_KASAR + BUFFER)
+                posisi_txt = "".join([f"`B{p['buy_price']:,.0f} - S{p['buy_price']+last_grid:,.0f}` | A:`{p['area']:,.0f}` | Q:`{p['qty']}`\n" for p in sorted(pos, key=lambda x: x['buy_price'], reverse=True)]) or "`- Belum ada posisi -`"
+                txt = f"*BOT V30.3.15 FIX*\n*Harga:* `${price:,.2f}` | *Grid:* `${last_grid:,.0f}`\n*Saldo:* `{usdt:.2f}` | *Modal/Layer:* `~{modal:.2f}` | *Qty:* `{qty_layer}`\n*POSISI:* `{len(pos)}`\n{posisi_txt}"
+                await notif(txt)
+            finally: await binance_temp.close()
+    except Exception as e: logging.error(f"WEBHOOK ERROR: {e}")
     return web.Response(text="ok")
 
 async def main():
@@ -204,7 +223,7 @@ async def main():
     app = web.Application(); app.router.add_post(f"/{TELE_TOKEN}", handle_webhook)
     runner = web.AppRunner(app); await runner.setup(); site = web.TCPSite(runner, '0.0.0.0', 8080); await site.start()
     requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/setWebhook", json={"url": f"{FLY_URL}/{TELE_TOKEN}"})
-    await notif(f"✅ *BOT V30.3.12 RUMAH DIEM JALAN*")
+    await notif(f"✅ *BOT V30.3.15 FIX JALAN*\nQty Min:`{MIN_QTY}` | $ Min:`{MIN_USDT}`")
 
     await scout_loop()
 
