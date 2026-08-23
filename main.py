@@ -21,17 +21,17 @@ BASE_COIN = "BTC"
 QUOTE_COIN = "USDT"
 LOOP_SEC = 3
 BUFFER_USDT = 0.5
+TABEL = "orders" # TAMBAH INI
 
 # ========== CONFIG ATR + GRID ==========
 ATR_PERIOD = 14
 ATR_TIMEFRAME = "1h"
 ATR_MULTIPLIER = 0.5
-ATR_UPDATE_HOUR_UTC = 17 # 17:00 UTC = 00:00 WIB
 GRID_MIN = 250
 GRID_MAX = 1000
 
 # ========== CONFIG MODE PEMANASAN ==========
-WAIT_FIRST_BUY = 600 # 10 menit dalam detik
+WAIT_FIRST_BUY = 600 # 10 menit
 FIRST_BUY_DONE = False
 START_TIME = time.time()
 
@@ -64,7 +64,6 @@ def auto_create_table():
     if isinstance(check, list):
         print("Tabel 'orders' sudah ada")
         return
-
     print("Tabel 'orders' tidak ada. Membuat otomatis...")
     sql = """
     create table if not exists public.orders (
@@ -82,9 +81,6 @@ def auto_create_table():
     if status == 200:
         print("Tabel 'orders' berhasil dibuat + RLS dimatikan")
         send_telegram("✅ Tabel 'orders' di Supabase berhasil dibuat otomatis")
-    else:
-        print(f"Gagal buat tabel. Status: {status}")
-        send_telegram(f"❌ Gagal buat tabel orders. Status: {status}")
 
 def sb_select(table, filters=""):
     try:
@@ -113,7 +109,6 @@ def get_all_balance():
     for a in data['balances']:
         if a['asset'] == QUOTE_COIN: saldo_usdt = float(a['free'])
         if a['asset'] == BASE_COIN: saldo_btc = float(a['free'])
-    del data
     return saldo_usdt, saldo_btc
 
 def send_telegram(msg):
@@ -121,8 +116,7 @@ def send_telegram(msg):
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
         data = {"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "HTML"}
         requests.post(url, data=data, timeout=5)
-    except Exception as e:
-        print(f"TELEGRAM ERROR: {e}")
+    except Exception as e: print(f"TELEGRAM ERROR: {e}")
 
 # ========== SATPAM BINANCE ==========
 def get_binance_rules(symbol):
@@ -145,25 +139,87 @@ def signed_request(method, path, params={}):
 
 def get_price(): return float(requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=3).json()['price'])
 
+# ========== KUNCI BARU: WAJIB SYNC DULU ==========
+def wajib_sync_dulu():
+    """KUNCI: Selalu sync Binance + Supabase sebelum action apapun"""
+    print("[SYNC] Sinkronisasi 1 arah dari BINANCE...")
+    sync_dan_cek(SYMBOL)
+    time.sleep(1)
+    print("[SYNC] Selesai. Data sudah paling update")
+
+# ========== SYNC 1 ARAH DARI BINANCE ==========
+def sync_dan_cek(symbol):
+    """ATURAN: Data dari Binance = Benar. Supabase ngikutin Binance"""
+    try:
+        # 1. AMBIL DATA DARI BINANCE
+        bin_orders = signed_request("GET", "/api/v3/openOrders", {"symbol": symbol})
+        positions_binance = signed_request("GET", "/api/v3/account")
+
+        prices_binance_buy = set()
+        prices_binance_sell = set()
+        for o in bin_orders:
+            p = float(o['price'])
+            if o['side'] == 'BUY': prices_binance_buy.add(p)
+            if o['side'] == 'SELL': prices_binance_sell.add(p)
+
+        btc_binance = 0
+        for a in positions_binance['balances']:
+            if a['asset'] == BASE_COIN: btc_binance = float(a['free'])
+
+        # 2. AMBIL DATA DARI SUPABASE
+        sb_orders = sb_select(TABEL, "status=eq.active")
+        if isinstance(sb_orders, str): sb_orders = []
+        prices_supabase = {float(d['price']) for d in sb_orders}
+
+        # 3. ATURAN 1: SUPABASE KOSONG, BINANCE ADA -> ISI SUPABASE
+        for p in prices_binance_buy:
+            if p not in prices_supabase:
+                print(f"[SYNC] Ditemukan BUY di Binance {p}. MENAMBAH ke Supabase...")
+                sb_insert(TABEL, {"price": p, "side": "BUY", "status": "active"})
+        for p in prices_binance_sell:
+            if p not in prices_supabase:
+                print(f"[SYNC] Ditemukan SELL di Binance {p}. MENAMBAH ke Supabase...")
+                sb_insert(TABEL, {"price": p, "side": "SELL", "status": "active"})
+
+        # 4. ATURAN 2: SUPABASE ADA, BINANCE KOSONG -> HAPUS SUPABASE
+        for d in sb_orders:
+            p = float(d['price'])
+            side = d['side']
+            if side == 'BUY' and p not in prices_binance_buy:
+                print(f"[SYNC] Ada BUY {p} di Supabase tapi kosong di Binance. MENGHAPUS...")
+                sb_delete(TABEL, f"price=eq.{p}&side=eq.BUY")
+            if side == 'SELL' and p not in prices_binance_sell:
+                print(f"[SYNC] Ada SELL {p} di Supabase tapi kosong di Binance. MENGHAPUS...")
+                sb_delete(TABEL, f"price=eq.{p}&side=eq.SELL")
+
+        print("[SYNC] Selesai. Supabase 100% ngikutin Binance")
+
+    except Exception as e:
+        print(f"[SYNC ERROR] {e}")
+
 # ========== SUPABASE LOGIC ==========
 def get_filled_buys():
-    data = sb_select("orders", "select=price&side=eq.BUY&status=eq.FILLED&order=price.asc")
+    data = sb_select(TABEL, "select=price&side=eq.BUY&status=eq.active&order=price.asc")
     if isinstance(data, str): return []
     return sorted([float(d['price']) for d in data])
 
 def delete_filled_buys_up_to(price_limit):
-    sb_delete("orders", f"side=eq.BUY&status=eq.FILLED&price=lte.{price_limit}")
+    sb_delete(TABEL, f"side=eq.BUY&price=lte.{price_limit}")
 
 def is_price_exist(price):
-    data = sb_select("orders", f"select=id&price=eq.{price}")
+    data = sb_select(TABEL, f"select=id&price=eq.{price}")
     if isinstance(data, str): return False
     return len(data) > 0
+
+def cek_total_posisi(): # BUAT CEK BUY PAKSA
+    data = sb_select(TABEL, "select=id&status=eq.active")
+    if isinstance(data, str): return 0
+    return len(data)
 
 # ========== FEE + QTY ==========
 def get_fee_rate():
     data = signed_request("GET", "/api/v3/account")
     fee = float(data['takerCommission']) / 10000
-    del data
     return fee
 
 def hitung_qty_aman(harga, target_usdt=5):
@@ -177,7 +233,7 @@ def hitung_qty_aman(harga, target_usdt=5):
 def hitung_butuh_modal(price, qty, fee):
     return (price * qty) + (price * qty * fee * 2) + BUFFER_USDT
 
-# ========== ATR MANAGER + LAPORAN HARIAN ==========
+# ========== ATR MANAGER ==========
 def get_atr(symbol, period=14, interval="1h"):
     r = requests.get(f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=5)
     data = r.json()
@@ -192,60 +248,22 @@ def update_grid_manager():
     global GRID_MANAGER, DAILY_STATS
     now_wib = datetime.now(WIB)
     hari_ini_wib = now_wib.strftime("%Y-%m-%d")
-
     if DAILY_STATS["date"]!= hari_ini_wib:
-        if DAILY_STATS["date"] is not None and DAILY_STATS["trade_count"] > 0:
-            saldo_usdt, saldo_btc = get_all_balance()
-            total_equity = saldo_usdt + (saldo_btc * get_price())
-            msg = f"[LAPORAN HARIAN {DAILY_STATS['date']} WIB]\nTotal Trade: {DAILY_STATS['trade_count']}\nProfit: {DAILY_STATS['profit_usdt']:.2f} USDT\nEquity: {total_equity:.2f} USDT"
-            send_telegram(msg)
         DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": hari_ini_wib}
-
-    if now_wib.hour == 0 and GRID_MANAGER["date"]!= hari_ini_wib:
-        atr = get_atr(SYMBOL, ATR_PERIOD, ATR_TIMEFRAME)
-        grid_hitungan = atr * ATR_MULTIPLIER
-        if grid_hitungan < GRID_MIN: grid_step = GRID_MIN
-        elif grid_hitungan > GRID_MAX: grid_step = GRID_MAX
-        else: grid_step = round(grid_hitungan / 50) * 50
-        GRID_MANAGER = {"grid_step": grid_step, "date": hari_ini_wib, "atr": atr}
-        saldo_usdt, saldo_btc = get_all_balance()
-        msg = f"[00:00 WIB] <b>ATR UPDATE</b>\nATR: {atr:.2f}\nGrid: {grid_step}\n\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}"
-        send_telegram(msg)
-
-    if GRID_MANAGER["date"] is None:
-        GRID_MANAGER["date"] = hari_ini_wib
-        GRID_MANAGER["grid_step"] = GRID_MIN
-
+    if GRID_MANAGER["date"] is None: GRID_MANAGER["date"] = hari_ini_wib
     return GRID_MANAGER["grid_step"]
 
 def generate_grid_levels(harga_tengah, grid_step):
     levels = []
     for i in range(-2, 3):
         level = round((harga_tengah + i * grid_step) / grid_step) * grid_step
-        if GRID_MIN <= level <= GRID_MAX: levels.append(level)
+        if level > 0: levels.append(level)
     return sorted(list(set(levels)))
-
-# ========== SYNC MOMENT ==========
-def sync_dan_cek(symbol):
-    print("SYNC: Ambil data dari Binance + Supabase...")
-    bin_orders = signed_request("GET", "/api/v3/openOrders", {"symbol": symbol})
-    sb_orders = sb_select("orders", "status=eq.OPEN")
-    if isinstance(sb_orders, str): sb_orders = []
-
-    bin_ids = {str(o['orderId']) for o in bin_orders}
-    sb_ids = {str(o['order_id']) for o in sb_orders}
-
-    for o in bin_orders:
-        if str(o['orderId']) not in sb_ids:
-            sb_insert("orders", {"order_id": o['orderId'], "side": o['side'], "price": o['price'], "qty": o['origQty'], "status": "OPEN"})
-    for o in sb_orders:
-        if str(o['order_id']) not in bin_ids:
-            sb_delete("orders", f"order_id=eq.{o['order_id']}")
-    del bin_orders, sb_orders
 
 # ========== EKSEKUSI FIX HARGA ==========
 def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=False):
     global DAILY_STATS
+    wajib_sync_dulu() # KUNCI: SYNC DULU SEBELUM TEMBAK
 
     if side == "BUY" and is_price_exist(price_grid):
         print(f"SKIP BUY: Harga {price_grid} sudah ada ordernya")
@@ -254,130 +272,113 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
     print(f"===== [REAL] TEMBAK {side} {qty} BTC di ~{price_grid} =====")
     order = signed_request("POST", "/api/v3/order", {"symbol": SYMBOL, "side": side, "type": "MARKET", "quantity": qty})
 
-    # AMBIL HARGA ASLI DARI BINANCE
     if 'fills' in order and len(order['fills']) > 0:
         harga_isi = sum(float(f['price']) * float(f['qty']) for f in order['fills']) / sum(float(f['qty']) for f in order['fills'])
         harga_isi = round(harga_isi, 2)
-    else:
-        harga_isi = float(order.get('avgPrice', price_grid))
+    else: harga_isi = float(order.get('avgPrice', price_grid))
 
-    status = "FILLED" if side == "BUY" else "OPEN"
-    sb_insert("orders", {"order_id": order['orderId'], "side": side, "price": harga_isi, "qty": qty, "status": status}) # CATAT HARGA ASLI
+    sb_insert(TABEL, {"price": harga_isi, "side": side, "status": "active"})
 
     saldo_usdt, saldo_btc = get_all_balance()
     fee = get_fee_rate()
-
-    butuh_modal = 0
-    if side == "BUY":
-        butuh_modal = hitung_butuh_modal(harga_isi, qty, fee)
-
+    butuh_modal = hitung_butuh_modal(harga_isi, qty, fee) if side == "BUY" else 0
     DAILY_STATS["trade_count"] += 1
     if side == "SELL":
         filled_buys = get_filled_buys()
         avg_buy = sum(filled_buys)/len(filled_buys) if filled_buys else harga_isi
         profit = (harga_isi * qty * (1 - fee)) - (avg_buy * qty * (1 + fee))
         DAILY_STATS["profit_usdt"] += profit
+        delete_filled_buys_up_to(harga_isi) # hapus buy yg udah kejual
 
     emoji = "🟢" if side == "BUY" else "🔴"
-    tipe = ""
-    if is_instan_darurat: tipe = " <b>SELL INSTAN DARURAT</b>"
-    elif is_reentry: tipe = " <b>RE-ENTRY GRID</b>"
-
-    msg = f"{emoji} <b>{side}{tipe}</b>\nSymbol: {SYMBOL}\nPrice: {harga_isi}\nQty: {qty}" # HARGA ASLI
-    if side == "BUY":
-        msg += f"\n<b>Butuh Modal:</b> {butuh_modal:.2f} USDT"
-    msg += f"\n\n<b>Saldo Sisa:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}\nTime: {datetime.now(WIB).strftime('%H:%M:%S')} WIB"
+    tipe = " <b>SELL INSTAN DARURAT</b>" if is_instan_darurat else " <b>RE-ENTRY GRID</b>" if is_reentry else ""
+    msg = f"{emoji} <b>{side}{tipe}</b>\nSymbol: {SYMBOL}\nPrice: {harga_isi}\nQty: {qty}"
+    if side == "BUY": msg += f"\n<b>Butuh Modal:</b> {butuh_modal:.2f} USDT"
+    msg += f"\n\n<b>Saldo Sisa:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}"
     send_telegram(msg)
     return order
 
 # ========== LOGIKA SELL INSTAN DARURAT ==========
 def cek_sell_instan_darurat(price):
+    wajib_sync_dulu() # KUNCI: SYNC DULU
     filled_buys = get_filled_buys()
     _, saldo_btc = get_all_balance()
-
-    if not filled_buys or saldo_btc == 0:
-        return False
-
+    if not filled_buys or saldo_btc == 0: return False
     buy_kelewat = [b for b in filled_buys if b <= price]
-    if not buy_kelewat:
-        return False
+    if not buy_kelewat: return False
 
     harga_tertinggi_kelewat = max(buy_kelewat)
-    print(f"!!! SELL INSTAN DARURAT!!! Ada {len(buy_kelewat)} buy kelewat. Tertinggi: {harga_tertinggi_kelewat}. Harga sekarang: {price}")
-
+    print(f"!!! SELL INSTAN DARURAT!!! Harga: {price}")
     qty = saldo_btc
     if qty < BINANCE_RULES['min_qty']: return False
-
     place_order_real("SELL", price, qty, is_instan_darurat=True)
-    delete_filled_buys_up_to(harga_tertinggi_kelewat)
-
-    if price > filled_buys[-1]:
-        print(f"Harga di atas range. RE-ENTRY di {price}")
-        if not is_price_exist(price):
-            place_order_real("BUY", price, hitung_qty_aman(price))
-
     return True
 
 def cek_signal_sell(price):
+    wajib_sync_dulu() # KUNCI: SYNC DULU
     grid_step = update_grid_manager()
     grid_levels = generate_grid_levels(price, grid_step)
     grid_atas = [g for g in grid_levels if g > price]
     if not grid_atas: return None, None, False
     target_grid = min(grid_atas)
-
     _, saldo_btc = get_all_balance()
     qty = hitung_qty_aman(target_grid)
-    if saldo_btc < qty: return None, None, False # FIX RETURN
-
-    ada_buy = len(sb_select("orders", f"price=eq.{target_grid}&side=eq.BUY&status=eq.FILLED")) > 0
+    if saldo_btc < qty: return None, None, False
+    ada_buy = len(sb_select(TABEL, f"price=eq.{target_grid}&side=eq.BUY&status=eq.active")) > 0
     return ("SELL", target_grid, False) if ada_buy else ("SELL", target_grid, True)
 
 def cek_signal_buy(price):
     global FIRST_BUY_DONE
+    wajib_sync_dulu() # KUNCI: SYNC DULU
 
     if not FIRST_BUY_DONE:
         sisa = WAIT_FIRST_BUY - (time.time() - START_TIME)
         if sisa > 0:
-            print(f"[PEMANASAN] Tunggu {int(sisa)}s lagi baru boleh buy pertama")
+            print(f"[PEMANASAN] Tunggu {int(sisa)}s lagi")
             return None, None
         else:
-            print("[PEMANASAN] Selesai. Buy pertama diizinkan")
+            if cek_total_posisi() > 0: # Cek lagi abis sync
+                print("[SYNC] Ternyata udah ada posisi. Skip Buy Paksa")
+                FIRST_BUY_DONE = True
+                return None, None
+            print(f"[PEMANASAN] Selesai. BUY PAKSA PERTAMA @ {price}")
+            qty = hitung_qty_aman(price)
+            fee = get_fee_rate()
+            butuh_usdt = hitung_butuh_modal(price, qty, fee)
+            saldo_usdt, _ = get_all_balance()
+            if saldo_usdt >= butuh_usdt:
+                FIRST_BUY_DONE = True
+                return "BUY", price
+            else: return None, None
 
     grid_step = update_grid_manager()
     grid_levels = generate_grid_levels(price, grid_step)
     grid_bawah = [g for g in grid_levels if g < price]
     if not grid_bawah: return None, None
     target_grid = max(grid_bawah)
-
     if is_price_exist(target_grid): return None, None
-
     qty = hitung_qty_aman(target_grid)
     fee = get_fee_rate()
     butuh_usdt = hitung_butuh_modal(target_grid, qty, fee)
     saldo_usdt, _ = get_all_balance()
-
     if saldo_usdt >= butuh_usdt:
-        FIRST_BUY_DONE = True
         return "BUY", target_grid
-    else:
-        return None, None
+    else: return None, None
 
 # ========== LOOP UTAMA ==========
 async def main():
     global START_TIME
     START_TIME = time.time()
-
     auto_create_table()
     get_binance_rules(SYMBOL)
     update_grid_manager()
+    wajib_sync_dulu() # SYNC PERTAMA KALI JALAN
     saldo_usdt, saldo_btc = get_all_balance()
-    harga_sekarang = get_price() # TAMBAH HARGA
-    send_telegram(f"🤖 <b>Bot V11.14 Jalan</b>\nMode: REAL | Pemanasan 10 Menit ON | ATR Jam 00:00 WIB\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
-
+    harga_sekarang = get_price()
+    send_telegram(f"🤖 <b>Bot V11.17 Jalan</b>\nMode: REAL | Sync 1 Arah ON\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
     cek_sell_instan_darurat(harga_sekarang)
     await asyncio.sleep(3)
-
-    print("Bot V11.14 MODE REAL. Menunggu 10 menit untuk buy pertama...")
+    print("Bot V11.17 MODE REAL. Menunggu 10 menit untuk buy pertama...")
 
     while True:
         try:
@@ -385,21 +386,16 @@ async def main():
             signal_buy, grid_buy = cek_signal_buy(price)
             signal_sell, grid_sell, is_reentry = cek_signal_sell(price)
 
-            if signal_buy or signal_sell:
-                sync_dan_cek(SYMBOL)
+            if signal_sell:
+                qty = hitung_qty_aman(grid_sell)
+                place_order_real("SELL", grid_sell, qty, is_reentry=is_reentry)
+                if is_reentry:
+                    if not is_price_exist(grid_sell):
+                        place_order_real("BUY", grid_sell, hitung_qty_aman(grid_sell), is_reentry=True)
+            if signal_buy:
+                qty = hitung_qty_aman(grid_buy)
+                place_order_real("BUY", grid_buy, qty)
 
-                if signal_sell:
-                    qty = hitung_qty_aman(grid_sell)
-                    place_order_real("SELL", grid_sell, qty, is_reentry=is_reentry)
-                    if is_reentry:
-                        if not is_price_exist(grid_sell):
-                            place_order_real("BUY", grid_sell, hitung_qty_aman(grid_sell), is_reentry=True)
-
-                if signal_buy:
-                    qty = hitung_qty_aman(grid_buy)
-                    place_order_real("BUY", grid_buy, qty)
-
-            del price, signal_buy, grid_buy, signal_sell, grid_sell
             gc.collect()
             await asyncio.sleep(LOOP_SEC)
         except Exception as e:
