@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-O", "main.py"]
+CMD ["python", "-O", "main.py"] # <-- ganti ke nama file kamu
