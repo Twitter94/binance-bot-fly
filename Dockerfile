@@ -11,7 +11,7 @@ COPY requirements.txt.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy semua file bot
-COPY..
+COPY . .
 
 # Jalanin bot dengan optimasi RAM
 CMD ["python", "-O", "bot.py"]
