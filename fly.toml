@@ -1,18 +1,18 @@
-app = 'bahaya'
-primary_region = 'sin' # Singapore paling deket Soko
+app = "bahaya" # ganti nama bebas. harus unik di fly
+primary_region = "sin" # Singapore paling deket ke Binance
 
 [build]
-  image = "registry.fly.io/bahaya:deployment-ab140d8b05e65d8b123727217b48dd81"
+  builder = "paketobuildpacks/builder:base" # biar otomatis deteksi python
 
 [env]
-  PYTHONUNBUFFERED = "1" # Biar log langsung keluar
+  TZ = "Asia/Jakarta" # biar log pake WIB
 
 [processes]
-  app = "python main.py" # Ganti sesuai nama file bot kamu
+  app = "python main.py" # <--- PENTING. Ini command buat jalanin bot
 
-[[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+[deploy]
+  release_command = "python -c \"print('Bot Starting')\"" # opsional
 
-# PENTING: HAPUS SEMUA BAGIAN [[services]] KALAU ADA
-# JANGAN ADA [[services.ports]] KARENA INI BUKAN WEB
+[[services]]
+  # Bot ini gak pake web, jadi services dikosongin aja
+  # Kalau ada error "no services" abaikan aja. Bot jalan di background
