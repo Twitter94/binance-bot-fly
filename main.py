@@ -190,7 +190,7 @@ def get_atr(symbol, period=14, interval="1h"):
 
 def update_grid_manager():
     global GRID_MANAGER, DAILY_STATS
-    now_wib = datetime.now(WIB) # PAKE WAKTU WIB
+    now_wib = datetime.now(WIB)
     hari_ini_wib = now_wib.strftime("%Y-%m-%d")
 
     if DAILY_STATS["date"]!= hari_ini_wib:
@@ -201,7 +201,6 @@ def update_grid_manager():
             send_telegram(msg)
         DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": hari_ini_wib}
 
-    # CEK JAM 17 UTC = JAM 0 WIB
     if now_wib.hour == 0 and GRID_MANAGER["date"]!= hari_ini_wib:
         atr = get_atr(SYMBOL, ATR_PERIOD, ATR_TIMEFRAME)
         grid_hitungan = atr * ATR_MULTIPLIER
@@ -244,32 +243,39 @@ def sync_dan_cek(symbol):
             sb_delete("orders", f"order_id=eq.{o['order_id']}")
     del bin_orders, sb_orders
 
-# ========== EKSEKUSI ==========
-def place_order_real(side, price, qty, is_reentry=False, is_instan_darurat=False):
+# ========== EKSEKUSI FIX HARGA ==========
+def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=False):
     global DAILY_STATS
 
-    if side == "BUY" and is_price_exist(price):
-        print(f"SKIP BUY: Harga {price} sudah ada ordernya")
+    if side == "BUY" and is_price_exist(price_grid):
+        print(f"SKIP BUY: Harga {price_grid} sudah ada ordernya")
         return None
 
-    print(f"===== [REAL] TEMBAK {side} {qty} BTC di {price} =====")
+    print(f"===== [REAL] TEMBAK {side} {qty} BTC di ~{price_grid} =====")
     order = signed_request("POST", "/api/v3/order", {"symbol": SYMBOL, "side": side, "type": "MARKET", "quantity": qty})
 
+    # AMBIL HARGA ASLI DARI BINANCE
+    if 'fills' in order and len(order['fills']) > 0:
+        harga_isi = sum(float(f['price']) * float(f['qty']) for f in order['fills']) / sum(float(f['qty']) for f in order['fills'])
+        harga_isi = round(harga_isi, 2)
+    else:
+        harga_isi = float(order.get('avgPrice', price_grid))
+
     status = "FILLED" if side == "BUY" else "OPEN"
-    sb_insert("orders", {"order_id": order['orderId'], "side": side, "price": price, "qty": qty, "status": status})
+    sb_insert("orders", {"order_id": order['orderId'], "side": side, "price": harga_isi, "qty": qty, "status": status}) # CATAT HARGA ASLI
 
     saldo_usdt, saldo_btc = get_all_balance()
     fee = get_fee_rate()
 
     butuh_modal = 0
     if side == "BUY":
-        butuh_modal = hitung_butuh_modal(price, qty, fee)
+        butuh_modal = hitung_butuh_modal(harga_isi, qty, fee)
 
     DAILY_STATS["trade_count"] += 1
     if side == "SELL":
         filled_buys = get_filled_buys()
-        avg_buy = sum(filled_buys)/len(filled_buys) if filled_buys else price
-        profit = (price * qty * (1 - fee)) - (avg_buy * qty * (1 + fee))
+        avg_buy = sum(filled_buys)/len(filled_buys) if filled_buys else harga_isi
+        profit = (harga_isi * qty * (1 - fee)) - (avg_buy * qty * (1 + fee))
         DAILY_STATS["profit_usdt"] += profit
 
     emoji = "🟢" if side == "BUY" else "🔴"
@@ -277,7 +283,7 @@ def place_order_real(side, price, qty, is_reentry=False, is_instan_darurat=False
     if is_instan_darurat: tipe = " <b>SELL INSTAN DARURAT</b>"
     elif is_reentry: tipe = " <b>RE-ENTRY GRID</b>"
 
-    msg = f"{emoji} <b>{side}{tipe}</b>\nSymbol: {SYMBOL}\nPrice: {price}\nQty: {qty}"
+    msg = f"{emoji} <b>{side}{tipe}</b>\nSymbol: {SYMBOL}\nPrice: {harga_isi}\nQty: {qty}" # HARGA ASLI
     if side == "BUY":
         msg += f"\n<b>Butuh Modal:</b> {butuh_modal:.2f} USDT"
     msg += f"\n\n<b>Saldo Sisa:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}\nTime: {datetime.now(WIB).strftime('%H:%M:%S')} WIB"
@@ -321,7 +327,7 @@ def cek_signal_sell(price):
 
     _, saldo_btc = get_all_balance()
     qty = hitung_qty_aman(target_grid)
-    if saldo_btc < qty: return None, False
+    if saldo_btc < qty: return None, None, False # FIX RETURN
 
     ada_buy = len(sb_select("orders", f"price=eq.{target_grid}&side=eq.BUY&status=eq.FILLED")) > 0
     return ("SELL", target_grid, False) if ada_buy else ("SELL", target_grid, True)
@@ -365,13 +371,13 @@ async def main():
     get_binance_rules(SYMBOL)
     update_grid_manager()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"🤖 <b>Bot V11.13 Jalan</b>\nMode: REAL | Pemanasan 10 Menit ON | ATR Jam 00:00 WIB\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    harga_sekarang = get_price() # TAMBAH HARGA
+    send_telegram(f"🤖 <b>Bot V11.14 Jalan</b>\nMode: REAL | Pemanasan 10 Menit ON | ATR Jam 00:00 WIB\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
 
-    price = get_price()
-    cek_sell_instan_darurat(price)
+    cek_sell_instan_darurat(harga_sekarang)
     await asyncio.sleep(3)
 
-    print("Bot V11.13 MODE REAL. Menunggu 10 menit untuk buy pertama...")
+    print("Bot V11.14 MODE REAL. Menunggu 10 menit untuk buy pertama...")
 
     while True:
         try:
