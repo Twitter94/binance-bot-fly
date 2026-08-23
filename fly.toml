@@ -1,18 +1,18 @@
-app = "bahaya"
-primary_region = "sin"
+app = 'bahaya'
+primary_region = 'sin' # Singapore paling deket Soko
 
 [build]
-  dockerfile = "Dockerfile"
+  image = "registry.fly.io/bahaya:deployment-ab140d8b05e65d8b123727217b48dd81"
 
-[[services]]
-  processes = ["app"]
-  protocol = "tcp"
-  internal_port = 8080
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
+[env]
+  PYTHONUNBUFFERED = "1" # Biar log langsung keluar
+
+[processes]
+  app = "python main.py" # Ganti sesuai nama file bot kamu
 
 [[vm]]
-  cpu_kind = "shared"
-  cpus = 1
+  size = "shared-cpu-1x"
   memory = "256mb"
+
+# PENTING: HAPUS SEMUA BAGIAN [[services]] KALAU ADA
+# JANGAN ADA [[services.ports]] KARENA INI BUKAN WEB
