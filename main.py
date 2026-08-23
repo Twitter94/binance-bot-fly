@@ -48,18 +48,27 @@ BUY_HISTORY = set()
 
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=minimal"}
 
-# ========== FUNGSI SUPABASE & BINANCE ==========
+# ========== FUNGSI SUPABASE & BINANCE - YANG DIBENERIN ==========
 def sb_insert(data):
     try: requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
     except: pass
 def sb_delete(filters):
     try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
     except: pass
+
+# INI YANG AKU RUBAH. TAMBAH PENGAMAN
 def sb_get_all():
     try:
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?select=price", headers=SB_HEADERS, timeout=5)
-        return r.json()
-    except: return []
+        r.raise_for_status() # Kalau 401/500 langsung error
+        data = r.json()
+        if isinstance(data, list): # PASTIKAN LIST
+            return data
+        send_telegram(f"❌ Supabase balikin bukan list: {data}")
+        return []
+    except Exception as e:
+        send_telegram(f"❌ Gagal ambil Supabase: {e}")
+        return []
 
 def signed_request(method, endpoint, params={}):
     params['timestamp'] = int(time.time() * 1000)
@@ -131,7 +140,7 @@ def sinkron_binance_supabase():
     global BUY_HISTORY
     _, _, balances = get_all_balance()
     data_supabase = sb_get_all()
-    supa_prices = {float(item['price']) for item in data_supabase}
+    supa_prices = {float(item['price']) for item in data_supabase if 'price' in item} # TAMBAH IF BIAR AMAN
     usdt, btc, _ = get_all_balance()
     if btc < 0.00001 and len(supa_prices) > 0:
         send_telegram(f"⚠️ <b>SINKRON</b>\nBinance BTC=0 tapi Supabase ada {len(supa_prices)} data. Hapus Supabase.")
@@ -202,9 +211,10 @@ async def main():
     global START_TIME, NOTIF_FLAGS; START_TIME = time.time()
     get_binance_rules(SYMBOL); update_grid_manager()
     data_supabase = sb_get_all()
-    for item in data_supabase: BUY_HISTORY.add(float(item['price']))
+    for item in data_supabase:
+        if 'price' in item: BUY_HISTORY.add(float(item['price'])) # TAMBAH IF BIAR AMAN
     saldo_usdt, saldo_btc, _ = get_all_balance(); harga_sekarang = get_price()
-    send_telegram(f"🤖 <b>Bot V11.46.5 FINAL</b>\n<b>Harga BTC:</b> {harga_sekarang:.2f}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    send_telegram(f"🤖 <b>Bot V11.46.7 FIX</b>\n<b>Harga BTC:</b> {harga_sekarang:.2f}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
     while True:
         try:
             price = get_price(); update_grid_manager()
