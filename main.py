@@ -17,21 +17,22 @@ TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 
 SYMBOL = "BTCUSDT"
-BASE_COIN = "BTC"
-QUOTE_COIN = "USDT"
 LOOP_SEC = 3
 BUFFER_USDT = 0.5
 TABEL = "orders"
+TARGET_USDT_PER_TRADE = 5
+
+# ========== TAMBAHAN WAJIB ==========
+QTY_MINIMAL = 0.00001 # SATPAM 2 PUNYA KAMU
+FEE_BINANCE = 0.001 # 0.1% BUY + 0.1% SELL
 
 # ========== CONFIG ATR + GRID ==========
 ATR_PERIOD = 14
 ATR_TIMEFRAME = "1h"
 ATR_MULTIPLIER = 0.5
 ATR_UPDATE_HOUR = 0
-
 GRID_MIN = 250
 GRID_MAX = 1000
-
 WAIT_FIRST_BUY = 10
 FIRST_BUY_DONE = False
 START_TIME = time.time()
@@ -43,36 +44,23 @@ GRID_MANAGER = {"grid_step": GRID_MIN, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
 WIB = timezone(timedelta(hours=7))
 NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
-
 BUY_HISTORY = set()
-LAST_ERROR_MSG = ""
 
-SB_HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=minimal"
-}
+SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=minimal"}
 
-# ========== FUNGSI SUPABASE ==========
+# ========== FUNGSI SUPABASE & BINANCE ==========
 def sb_insert(data):
     try: requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
     except: pass
-
-def sb_select(filters=""):
-    try:
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
-        return r.json()
-    except: return []
-
 def sb_delete(filters):
     try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
     except: pass
+def sb_get_all():
+    try:
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?select=price", headers=SB_HEADERS, timeout=5)
+        return r.json()
+    except: return []
 
-def auto_create_table(): # INI YG KEMARIN KEPOTONG
-    pass # Biarin kosong aja. Kita bikin manual di Supabase
-
-# ========== FUNGSI BINANCE ==========
 def signed_request(method, endpoint, params={}):
     params['timestamp'] = int(time.time() * 1000)
     query_string = urlencode(params)
@@ -81,40 +69,42 @@ def signed_request(method, endpoint, params={}):
     headers = {'X-MBX-APIKEY': BINANCE_API_KEY}
     return requests.request(method, url, headers=headers, timeout=10).json()
 
-def get_price():
-    return float(requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=5).json()['price'])
-
+def get_price(): return float(requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=5).json()['price'])
 def get_all_balance():
     data = signed_request("GET", "/api/v3/account")
     usdt = float(next((b['free'] for b in data['balances'] if b['asset']=='USDT'), 0))
     btc = float(next((b['free'] for b in data['balances'] if b['asset']=='BTC'), 0))
-    return usdt, btc
+    return usdt, btc, data['balances']
 
 def get_binance_rules(symbol):
     data = requests.get(f"{BASE_URL}/api/v3/exchangeInfo?symbol={symbol}", timeout=5).json()
     for f in data['symbols'][0]['filters']:
         if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
-        if f['filterType']=='LOT_SIZE':
-            BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
+        if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
 
-def format_qty(qty):
-    step = BINANCE_RULES['step_size']
-    return float(int(qty / step) * step)
+def format_qty(qty): return float(int(qty / BINANCE_RULES['step_size']) * BINANCE_RULES['step_size'])
 
-def hitung_qty_aman(harga, target_usdt=5):
+# ========== PERBAIKAN 1: 2 SATPAM ==========
+def hitung_qty_aman(harga, target_usdt=TARGET_USDT_PER_TRADE):
     qty = target_usdt / harga
     qty = format_qty(qty)
-    if qty * harga < BINANCE_RULES['min_notional']: qty = format_qty(BINANCE_RULES['min_notional'] / harga)
+    # SATPAM 1: MIN 5 USDT
+    if qty * harga < BINANCE_RULES['min_notional']:
+        qty = format_qty(BINANCE_RULES['min_notional'] / harga)
+    # SATPAM 2: MIN QTY 0.00001
+    if qty < QTY_MINIMAL:
+        qty = QTY_MINIMAL
     return qty
 
-def hitung_butuh_modal(price, qty, fee=0.001):
-    return (price * qty * (1 + fee)) + BUFFER_USDT
+# ========== PERBAIKAN 2: FEE BUY + SELL ==========
+def hitung_butuh_modal(price, qty, buffer=BUFFER_USDT):
+    modal_dasar = price * qty
+    fee_total = modal_dasar * (FEE_BINANCE * 2) # buy + sell
+    total_butuh = modal_dasar + fee_total + buffer
+    return total_butuh
 
-# ========== FUNGSI TELEGRAM ==========
 def send_telegram(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
+    try: requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
     except: pass
 
 # ========== FUNGSI ATR & GRID ==========
@@ -136,72 +126,91 @@ def update_grid_manager():
         GRID_MANAGER = {"grid_step": grid_step, "atr": atr_baru, "date": hari_ini_wib}
         send_telegram(f"📊 <b>ATR UPDATE 00:00</b>\nATR: {atr_baru:.2f}\nGrid Baru: {grid_step:.2f}")
 
-def generate_grid_levels(harga_tengah, grid_step):
-    return sorted(list(set([harga_tengah + (i * grid_step) for i in range(-3, 4) if harga_tengah + (i * grid_step) > 0])))
+# ========== FUNGSI SINKRON BARU V11.45 ==========
+def sinkron_binance_supabase():
+    global BUY_HISTORY
+    _, _, balances = get_all_balance()
+    data_supabase = sb_get_all()
+    supa_prices = {float(item['price']) for item in data_supabase}
+    usdt, btc, _ = get_all_balance()
+    if btc < 0.00001 and len(supa_prices) > 0:
+        send_telegram(f"⚠️ <b>SINKRON</b>\nBinance BTC=0 tapi Supabase ada {len(supa_prices)} data. Hapus Supabase.")
+        for price in supa_prices:
+            sb_delete(f"price=eq.{price}")
+        BUY_HISTORY.clear()
 
-# ========== FUNGSI LOGIKA ==========
-def is_price_exist(price):
-    return False # Sederhanain dulu biar gak error
-
+# ========== FUNGSI LOGIKA UTAMA V11.45 ==========
 def cek_signal_buy(price):
     global FIRST_BUY_DONE, START_TIME
-    if not FIRST_BUY_DONE and time.time() - START_TIME > WAIT_FIRST_BUY:
+    grid_step = GRID_MANAGER["grid_step"]
+    if not FIRST_BUY_DONE and len(BUY_HISTORY) == 0 and time.time() - START_TIME > WAIT_FIRST_BUY:
         FIRST_BUY_DONE = True; return True, price
-    grids = generate_grid_levels(price, GRID_MANAGER["grid_step"])
-    buy_grid = grids[2] # grid ke 3 dari bawah
-    if buy_grid not in BUY_HISTORY: return True, buy_grid
+    if len(BUY_HISTORY) > 0:
+        harga_terakhir_buy = max(BUY_HISTORY)
+        buy_grid = harga_terakhir_buy - grid_step
+        if price <= buy_grid and buy_grid not in BUY_HISTORY:
+            return True, buy_grid
     return False, 0
 
 def cek_signal_sell(price):
-    grids = generate_grid_levels(price, GRID_MANAGER["grid_step"])
-    sell_grid = grids[4] # grid ke 3 dari atas
-    if sell_grid in BUY_HISTORY: return True, sell_grid, False
-    return False, 0, False
+    grid_step = GRID_MANAGER["grid_step"]
+    if len(BUY_HISTORY) == 0: return False, 0
+    harga_terakhir_buy = max(BUY_HISTORY)
+    target_sell = harga_terakhir_buy + grid_step
+    if price >= target_sell:
+        return True, target_sell
+    return False, 0
 
-def cek_sell_instan_darurat(price):
-    usdt, btc = get_all_balance()
-    if btc > 0.00001:
-        qty = format_qty(btc)
-        signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
-        send_telegram(f"⚠️ <b>SELL DARURAT</b> {price}")
-
-def place_order_real(side, price_grid, qty, is_reentry=False):
+def place_order_real(side, price_grid, qty):
     global BUY_HISTORY
-    if side=="BUY" and price_grid in BUY_HISTORY: return
-    usdt, btc = get_all_balance()
+    sinkron_binance_supabase()
+    usdt, btc, _ = get_all_balance()
+    if side=="SELL":
+        if btc < qty:
+            if not NOTIF_FLAGS["saldo_kurang"]:
+                send_telegram(f"💰 <b>SALDO BTC KURANG</b>\nButuh: {qty}\nPunya: {btc}")
+            NOTIF_FLAGS["saldo_kurang"]=True; return
+        NOTIF_FLAGS["saldo_kurang"]=False
+        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+        if 'orderId' in res:
+            grid_buy = price_grid - GRID_MANAGER["grid_step"]
+            BUY_HISTORY.discard(grid_buy)
+            sb_delete(f"price=eq.{grid_buy}")
+            harga_beli = grid_buy
+            profit = (price_grid - harga_beli) * qty * (1 - FEE_BINANCE)
+            DAILY_STATS["profit_usdt"] += profit; DAILY_STATS["trade_count"] += 1
+            send_telegram(f"🔴 <b>SELL</b> {price_grid:.2f}\nProfit: {profit:.2f} USDT\n⏫ <b>KUNCI PROFIT</b>")
+            qty_buy = hitung_qty_aman(price_grid)
+            place_order_real("BUY", price_grid, qty_buy)
+            BUY_HISTORY.add(price_grid)
+            send_telegram(f"🚀 <b>RE-ENTRY</b> {price_grid:.2f}")
     if side=="BUY":
+        if price_grid in BUY_HISTORY: return
         butuh = hitung_butuh_modal(price_grid, qty)
         if usdt < butuh:
-            if not NOTIF_FLAGS["saldo_kurang"]: send_telegram(f"💰 SALDO KURANG. Butuh {butuh:.2f}")
+            if not NOTIF_FLAGS["saldo_kurang"]:
+                send_telegram(f"💰 <b>SALDO USDT KURANG</b>\nButuh: {butuh:.2f} USDT\nPunya: {usdt:.2f} USDT\n<b>MENUNGGU TOPUP/SELL</b>")
             NOTIF_FLAGS["saldo_kurang"]=True; return
+        NOTIF_FLAGS["saldo_kurang"]=False
         res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
         if 'orderId' in res:
             BUY_HISTORY.add(price_grid)
             sb_insert({"price":price_grid, "qty":qty, "side":"BUY", "status":"OPEN"})
-            send_telegram(f"🟢 <b>BUY</b> {price_grid:.2f}\nQty: {qty}")
-            NOTIF_FLAGS["saldo_kurang"]=False
-    if side=="SELL":
-        if btc < qty: return
-        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
-        if 'orderId' in res:
-            profit = (price_grid * qty) - (price_grid * qty) # sederhanain
-            DAILY_STATS["profit_usdt"] += profit; DAILY_STATS["trade_count"] += 1
-            BUY_HISTORY.discard(price_grid)
-            sb_delete(f"price=eq.{price_grid}")
-            send_telegram(f"🔴 <b>SELL</b> {price_grid:.2f}\nProfit: {profit:.2f}")
+            send_telegram(f"🟢 <b>BUY</b> {price_grid:.2f}\nQty: {qty}\n⏬ <b>NUMPUK</b>")
 
 async def main():
     global START_TIME, NOTIF_FLAGS; START_TIME = time.time()
-    auto_create_table(); get_binance_rules(SYMBOL); update_grid_manager()
-    saldo_usdt, saldo_btc = get_all_balance(); harga_sekarang = get_price()
-    send_telegram(f"🤖 <b>Bot V11.39 FIXED</b>\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
-    cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
+    get_binance_rules(SYMBOL); update_grid_manager()
+    data_supabase = sb_get_all()
+    for item in data_supabase: BUY_HISTORY.add(float(item['price']))
+    saldo_usdt, saldo_btc, _ = get_all_balance(); harga_sekarang = get_price()
+    send_telegram(f"🤖 <b>Bot V11.46.5 FINAL</b>\n<b>Harga BTC:</b> {harga_sekarang:.2f}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
     while True:
         try:
             price = get_price(); update_grid_manager()
             signal_buy, grid_buy = cek_signal_buy(price)
-            signal_sell, grid_sell, is_reentry = cek_signal_sell(price)
-            if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(grid_sell), is_reentry)
+            signal_sell, grid_sell = cek_signal_sell(price)
+            if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(grid_sell))
             if signal_buy: place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
             gc.collect(); await asyncio.sleep(LOOP_SEC)
         except Exception as e:
