@@ -4,15 +4,20 @@ primary_region = "sin"
 [build]
 dockerfile = "Dockerfile"
 
-[processes]
-app = "python -O main.py"
+[[services]]
+  processes = ["app"]
+  protocol = "tcp"
+  internal_port = 8080
 
 [[vm]]
-cpu_kind = "shared"
-cpus = 1
-memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"
 
-[http_service] # <-- TAMBAHIN INI BIAR GAK SLEEP
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
+[deploy]
+  release_command = ""
+
+[http_service] # <-- KUNCI 24/7 ADA DI SINI
+  auto_stop_machines = false # JANGAN MATI OTOMATIS
+  auto_start_machines = true # NYALA OTOMATIS KALAU RESTART
+  min_machines_running = 1 # SELALU ADA 1 MESIN NYALA
