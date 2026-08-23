@@ -5,7 +5,7 @@ primary_region = "sin"
   dockerfile = "Dockerfile"
 
 [processes]
-  app = "python -O bot.py" # Jalanin bot doang, gak perlu web
+  app = "python -O main.py" # Jalanin bot doang, gak perlu web
 
 [[vm]]
   memory = "256mb"
