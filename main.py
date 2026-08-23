@@ -17,21 +17,17 @@ SUPABASE_KEY = os.getenv("SUPA_KEY")
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 
-# CEK ENV WAJIB SAAT START
 for v in ["API_KEY", "API_SECRET", "SUPA_URL", "SUPA_KEY", "TELE_TOKEN", "TELE_CHAT_ID"]:
     if not os.getenv(v):
-        print(f"FATAL: {v} belum di set di flyctl secrets")
+        print(f"FATAL: {v} belum di set")
         sys.exit(1)
 
 SYMBOL = "BTCUSDT"
-BASE_COIN = "BTC"
-QUOTE_COIN = "USDT"
 LOOP_SEC = 3
 BUFFER_USDT = 0.5
 TABEL = "orders"
 TARGET_USDT_PER_BUY = 5
 
-# ========== CONFIG ATR ==========
 ATR_PERIOD = 14
 ATR_TIMEFRAME = "1h"
 ATR_MULTIPLIER = 0.5
@@ -43,7 +39,6 @@ WAIT_FIRST_BUY = 10
 FIRST_BUY_DONE = False
 START_TIME = time.time()
 
-# ========== GLOBAL ==========
 BASE_URL = "https://api.binance.com"
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 ATR_MANAGER = {"jarak": 500, "date": None, "atr": 0}
@@ -51,14 +46,8 @@ DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
 WIB = timezone(timedelta(hours=7))
 NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
 
-SB_HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=representation"
-}
+SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
-# ========== FUNGSI SUPABASE ==========
 def sb_insert(data):
     try:
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
@@ -83,7 +72,6 @@ def sb_delete(order_id):
 
 def auto_create_table(): pass
 
-# ========== FUNGSI BINANCE ==========
 def signed_request(method, endpoint, params={}):
     try:
         params['timestamp'] = int(time.time() * 1000)
@@ -124,9 +112,11 @@ def get_binance_rules(symbol):
 def cancel_order(order_id):
     signed_request("DELETE", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
 
-def format_qty(qty):
+def format_qty(qty): # FIX UTAMA ANTI 6e-05
     step = BINANCE_RULES['step_size']
-    return float(int(qty / step) * step)
+    decimals = 8
+    qty_floored = int(qty / step) * step
+    return float(f"{qty_floored:.{decimals}f}")
 
 def hitung_qty_aman(harga, target_usdt=TARGET_USDT_PER_BUY):
     qty = target_usdt / harga
@@ -136,18 +126,14 @@ def hitung_qty_aman(harga, target_usdt=TARGET_USDT_PER_BUY):
 
 def hitung_butuh_modal(price, qty):
     modal = price * qty
-    fee_buy = modal * 0.001
-    fee_sell = modal * 0.001
-    return modal + fee_buy + fee_sell + BUFFER_USDT
+    return modal * 1.002 + BUFFER_USDT
 
-# ========== FUNGSI TELEGRAM ==========
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
     except: pass
 
-# ========== FUNGSI ATR CLAMP 250-1000 ==========
 def get_atr(symbol, period=ATR_PERIOD, interval=ATR_TIMEFRAME):
     r = requests.get(f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=5)
     data = r.json(); tr_list = []
@@ -165,9 +151,8 @@ def update_atr_manager():
         jarak_mentah = atr_baru * ATR_MULTIPLIER
         jarak = max(MIN_JARAK, min(jarak_mentah, MAX_JARAK))
         ATR_MANAGER = {"jarak": jarak, "atr": atr_baru, "date": hari_ini_wib}
-        send_telegram(f"📊 <b>ATR UPDATE 00:00</b>\nATR: {atr_baru:.2f}\nFinal: {jarak:.2f}")
+        send_telegram(f"📊 <b>ATR UPDATE 00:00</b>\nFinal: {jarak:.2f}")
 
-# ========== LOGIKA TANPA GRID ==========
 def is_price_exist(price):
     data = sb_select(f"price=eq.{price}&side=eq.BUY&status=eq.OPEN")
     return data[0] if len(data) > 0 else None
@@ -205,7 +190,7 @@ def cek_sell_instan_darurat(price):
             qty = format_qty(btc)
             res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
             if 'orderId' in res:
-                send_telegram(f"⚠️ <b>SELL DARURAT</b> {qty:.6f} BTC @ {price:.2f}")
+                send_telegram(f"⚠️ <b>SELL DARURAT</b> {qty:.8f} BTC @ {price:.2f}")
 
 def place_order_real(side, price_grid, qty, order_data=None):
     global NOTIF_FLAGS
@@ -223,23 +208,21 @@ def place_order_real(side, price_grid, qty, order_data=None):
                 cancel_order(res['orderId'])
                 send_telegram("❌ Gagal catat ke DB. Order BUY di CANCEL")
                 return
-            send_telegram(f"🟢 <b>BUY</b> {price_grid:.2f}\nButuh: {butuh:.2f}\nQty: {qty}\nJarak: {ATR_MANAGER['jarak']:.2f}")
+            send_telegram(f"🟢 <b>BUY</b> {price_grid:.2f}\nButuh: {butuh:.2f}\nQty: {qty:.8f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
             NOTIF_FLAGS["saldo_kurang"]=False
     if side=="SELL":
         if btc < qty: return
         res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
         if 'orderId' in res and order_data:
             harga_beli = order_data['price']
-            harga_jual_net = price_grid * (1 - 0.001)
-            harga_beli_net = harga_beli * (1 + 0.001)
-            profit = (harga_jual_net - harga_beli_net) * qty
+            profit = ((price_grid * 0.999) - (harga_beli * 1.001)) * qty
             DAILY_STATS["profit_usdt"] += profit; DAILY_STATS["trade_count"] += 1
             sb_delete(order_data['id'])
-            send_telegram(f"🔴 <b>SELL TP</b> {price_grid:.2f}\nBeli: {harga_beli:.2f}\nProfit: {profit:.2f} USDT\nJarak: {ATR_MANAGER['jarak']:.2f}")
+            send_telegram(f"🔴 <b>SELL TP</b> {price_grid:.2f}\nProfit: {profit:.2f} USDT\nJarak: {ATR_MANAGER['jarak']:.2f}")
 
 async def main():
     global START_TIME; START_TIME = time.time()
-    send_telegram("🤖 <b>Bot V11.54 START</b> ENV OK")
+    send_telegram("🤖 <b>Bot V11.55 START</b> DB OK")
     auto_create_table(); get_binance_rules(SYMBOL)
     harga_sekarang = get_price(); update_atr_manager()
     saldo_usdt, saldo_btc = get_all_balance()
