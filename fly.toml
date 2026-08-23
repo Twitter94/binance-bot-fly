@@ -2,12 +2,17 @@ app = "bahaya"
 primary_region = "sin"
 
 [build]
-  dockerfile = "Dockerfile"
+dockerfile = "Dockerfile"
 
 [processes]
-  app = "python -O main.py" # Jalanin bot doang, gak perlu web
+app = "python -O main.py"
 
 [[vm]]
-  memory = "256mb"
-  cpu_kind = "shared"
-  cpus = 1
+cpu_kind = "shared"
+cpus = 1
+memory = "256mb"
+
+[http_service] # <-- TAMBAHIN INI BIAR GAK SLEEP
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
