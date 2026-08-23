@@ -31,7 +31,7 @@ GRID_MIN = 250
 GRID_MAX = 1000
 
 # ========== CONFIG MODE PEMANASAN ==========
-WAIT_FIRST_BUY = 10 # UBAH JADI 10 DETIK DULU BUAT TEST
+WAIT_FIRST_BUY = 10
 FIRST_BUY_DONE = False
 START_TIME = time.time()
 
@@ -42,7 +42,10 @@ GRID_MANAGER = {"grid_step": GRID_MIN, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
 WIB = timezone(timedelta(hours=7))
 NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
-LAST_BUY_PRICE = 0 # FLAG BARU ANTI SPAM 3 DETIK
+
+# FIX FINAL: CUMA 2 INI
+BUY_HISTORY = set() # Kunci 1 Grid 1x
+LAST_ERROR_MSG = "" # Biar notif gak spam
 
 SB_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -135,7 +138,6 @@ def delete_filled_buys_up_to(price_limit):
     sb_delete(TABEL, f"side=eq.BUY&price=lte.{price_limit}")
 
 def is_price_exist(price):
-    # FIX: CEK DI RIWAYAT 5 MENIT TERAKHIR JUGA, BUKAN CUMA OPEN ORDERS
     trades = signed_request("GET", "/api/v3/myTrades", {"symbol": SYMBOL, "limit": 100, "startTime": int((time.time() - 300) * 1000)})
     for t in trades:
         if abs(float(t['price']) - price) < 0.5 and t['isBuyer']:
@@ -185,27 +187,44 @@ def generate_grid_levels(harga_tengah, grid_step):
         if level > 0: levels.append(level)
     return sorted(list(set(levels)))
 
-# ========== EKSEKUSI FIX HARGA ==========
+# ========== EKSEKUSI FIX HARGA V11.30 TANPA COOLDOWN ==========
 def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=False):
-    global DAILY_STATS, NOTIF_FLAGS, LAST_BUY_PRICE
-    # FIX 3: ANTI SPAM 3 DETIK DI HARGA YANG SAMA
-    if time.time() - LAST_BUY_PRICE < 3 and side == "BUY":
-        print(f"SKIP: Baru buy 3 detik lalu"); return None
+    global DAILY_STATS, NOTIF_FLAGS, BUY_HISTORY, LAST_ERROR_MSG
 
-    if side == "BUY" and is_price_exist(price_grid): print(f"SKIP BUY: Harga {price_grid} sudah ada di riwayat"); return None
+    price_key = round(price_grid, 1)
+
+    # KUNCI 1: 1 GRID 1 KALI. TIDAK BOLEH DOBEL
+    if side == "BUY" and price_key in BUY_HISTORY:
+        print(f"SKIP: Grid {price_key} sudah dibeli. Tunggu SELL dulu"); return None
+
+    # KUNCI 2: CEK SALDO CUKUP SEBELUM TEMBAK. KALAU KURANG = PAUSE
+    saldo_usdt, _ = get_all_balance()
+    butuh_modal = hitung_butuh_modal(price_grid, qty, get_fee_rate())
+    if side == "BUY" and saldo_usdt < butuh_modal:
+        msg = f"⏸️ <b>PAUSE BUY</b>\nButuh: {butuh_modal:.2f} USDT\nSaldo: {saldo_usdt:.2f} USDT\n\nMenunggu SELL masuk / TOP UP"
+        if msg!= LAST_ERROR_MSG: send_telegram(msg); LAST_ERROR_MSG = msg
+        print(msg); return None
 
     print(f"===== [REAL] TEMBAK {side} {qty} BTC di ~{price_grid} =====")
     order = signed_request("POST", "/api/v3/order", {"symbol": SYMBOL, "side": side, "type": "MARKET", "quantity": qty})
+
+    # KUNCI 3: GAGAL NOTIF 1X + KASIH ALASAN
+    if 'orderId' not in order:
+        error_reason = order.get('msg', 'Unknown Error')
+        msg = f"❌ <b>ORDER GAGAL 1X</b>\nSide: {side}\nHarga: {price_grid}\nAlasan: {error_reason}"
+        if msg!= LAST_ERROR_MSG: send_telegram(msg); LAST_ERROR_MSG = msg
+        print(msg); return None
+
+    LAST_ERROR_MSG = "" # reset kalau sukses
 
     if 'fills' in order and len(order['fills']) > 0:
         harga_isi = sum(float(f['price']) * float(f['qty']) for f in order['fills']) / sum(float(f['qty']) for f in order['fills'])
         harga_isi = round(harga_isi, 2)
     else: harga_isi = float(order.get('avgPrice', price_grid))
 
-    # FIX 1: UPDATE SALDO DULU BARU KIRIM TELE
     saldo_usdt, saldo_btc = get_all_balance()
-    time.sleep(0.5) # Kasih jeda 0.5s biar saldo update di binance
-    saldo_usdt, saldo_btc = get_all_balance() # Cek ulang
+    time.sleep(0.5)
+    saldo_usdt, saldo_btc = get_all_balance()
 
     sb_insert(TABEL, {"price": harga_isi, "side": side, "status": "active"})
 
@@ -213,7 +232,8 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
     butuh_modal = hitung_butuh_modal(harga_isi, qty, fee) if side == "BUY" else 0
     DAILY_STATS["trade_count"] += 1
 
-    if side == "BUY": LAST_BUY_PRICE = time.time() # CATAT WAKTU BUY
+    if side == "BUY":
+        BUY_HISTORY.add(price_key) # CATAT GRID UDAH KEBELI
 
     if side == "SELL":
         filled_buys = get_filled_buys()
@@ -221,6 +241,9 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
         profit = (harga_isi * qty * (1 - fee)) - (avg_buy * qty * (1 + fee))
         DAILY_STATS["profit_usdt"] += profit
         delete_filled_buys_up_to(harga_isi)
+        BUY_HISTORY.discard(round(avg_buy, 1)) # BUKA KUNCI GRID BIAR BISA DIBELI LAGI
+        print(f"RESET: Grid {round(avg_buy, 1)} sudah dijual. Bisa dibeli lagi")
+
         if not is_instan_darurat and not is_reentry:
             print(f"[RE-ENTRY] Langsung BUY balik di {harga_isi} setelah sell normal")
             time.sleep(1)
@@ -279,7 +302,7 @@ def cek_signal_buy(price):
 
             if saldo_usdt < butuh_usdt:
                 if not NOTIF_FLAGS["saldo_kurang"]:
-                    send_telegram(f"⚠️ <b>SALDO KURANG</b>\nButuh: {butuh_usdt:.2f} USDT\nPunya: {saldo_usdt:.2f} USDT\n\nBot nunggu Sell masuk / Topup")
+                    send_telegram(f"⚠️ <b>SALDO KURANG</b>\nButuh: {butuh_usdt:.2f} USDT\nPunya: {saldo_usdt:.2f} USDT\nBot nunggu Sell masuk / Topup")
                     NOTIF_FLAGS["saldo_kurang"] = True
                 return None, None
 
@@ -302,9 +325,9 @@ async def main():
     global START_TIME, NOTIF_FLAGS; START_TIME = time.time()
     auto_create_table(); get_binance_rules(SYMBOL); update_grid_manager()
     saldo_usdt, saldo_btc = get_all_balance(); harga_sekarang = get_price()
-    send_telegram(f"🤖 <b>Bot V11.25 ANTI SPAM</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    send_telegram(f"🤖 <b>Bot V11.30 NO COOLDOWN</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
-    print("Bot V11.25 MODE REAL. Menunggu 10 detik untuk buy pertama...")
+    print("Bot V11.30 MODE REAL. Menunggu 10 detik untuk buy pertama...")
 
     while True:
         try:
