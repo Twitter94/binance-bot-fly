@@ -41,8 +41,6 @@ BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001} 
 GRID_MANAGER = {"grid_step": GRID_MIN, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
 WIB = timezone(timedelta(hours=7))
-
-# FLAG ANTI SPAM
 NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
 
 SB_HEADERS = {
@@ -61,6 +59,13 @@ def sb_query(sql):
         r = requests.post(url, headers=headers, json={"sql": sql}, timeout=5)
         return r.status_code
     except: return 500
+
+def sb_select(table, filters=""): # <-- INI YANG KURANG TADI
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/{table}?{filters}"
+        r = requests.get(url, headers=SB_HEADERS, timeout=5)
+        return r.json() if r.status_code == 200 else []
+    except Exception as e: return []
 
 def auto_create_table():
     check = sb_select("orders", "select=id&limit=1")
@@ -119,7 +124,6 @@ def get_price(): return float(requests.get(f"{BASE_URL}/api/v3/ticker/price?symb
 
 # ========== LOGIC 100% DARI BINANCE ==========
 def get_filled_buys():
-    """FIX: AMBIL DARI BINANCE LANGSUNG"""
     try:
         trades = signed_request("GET", "/api/v3/myTrades", {"symbol": SYMBOL, "limit": 500})
         buys = [float(t['price']) for t in trades if t['isBuyer']]
@@ -127,11 +131,9 @@ def get_filled_buys():
     except: return []
 
 def delete_filled_buys_up_to(price_limit):
-    """INI CUMA HAPUS ARSIP DI SUPABASE BIAR RAPIH"""
     sb_delete(TABEL, f"side=eq.BUY&price=lte.{price_limit}")
 
 def is_price_exist(price):
-    """FIX: CEK DARI BINANCE LANGSUNG"""
     bin_orders = signed_request("GET", "/api/v3/openOrders", {"symbol": SYMBOL})
     for o in bin_orders:
         if abs(float(o['price']) - price) < 0.01 and o['side'] == 'BUY':
@@ -139,7 +141,6 @@ def is_price_exist(price):
     return False
 
 def cek_total_posisi():
-    """FIX: CEK BTC DI BINANCE LANGSUNG"""
     _, saldo_btc = get_all_balance()
     return saldo_btc
 
@@ -195,19 +196,18 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
         harga_isi = round(harga_isi, 2)
     else: harga_isi = float(order.get('avgPrice', price_grid))
 
-    sb_insert(TABEL, {"price": harga_isi, "side": side, "status": "active"}) # CUMA ARSIP
+    sb_insert(TABEL, {"price": harga_isi, "side": side, "status": "active"})
 
     saldo_usdt, saldo_btc = get_all_balance(); fee = get_fee_rate()
     butuh_modal = hitung_butuh_modal(harga_isi, qty, fee) if side == "BUY" else 0
     DAILY_STATS["trade_count"] += 1
 
     if side == "SELL":
-        filled_buys = get_filled_buys() # DARI BINANCE
+        filled_buys = get_filled_buys()
         avg_buy = sum(filled_buys)/len(filled_buys) if filled_buys else harga_isi
         profit = (harga_isi * qty * (1 - fee)) - (avg_buy * qty * (1 + fee))
         DAILY_STATS["profit_usdt"] += profit
-        delete_filled_buys_up_to(harga_isi) # HAPUS ARSIP
-        # RE-ENTRY
+        delete_filled_buys_up_to(harga_isi)
         if not is_instan_darurat and not is_reentry:
             print(f"[RE-ENTRY] Langsung BUY balik di {harga_isi} setelah sell normal")
             time.sleep(1)
@@ -225,7 +225,7 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
 
 # ========== LOGIKA SELL INSTAN DARURAT ==========
 def cek_sell_instan_darurat(price):
-    filled_buys = get_filled_buys(); _, saldo_btc = get_all_balance() # DARI BINANCE
+    filled_buys = get_filled_buys(); _, saldo_btc = get_all_balance()
     if not filled_buys or saldo_btc == 0: return False
     buy_kelewat = [b for b in filled_buys if b <= price]
     if not buy_kelewat: return False
@@ -235,7 +235,6 @@ def cek_sell_instan_darurat(price):
     qty = saldo_btc
     if qty < BINANCE_RULES['min_qty']: return False
     place_order_real("SELL", price, qty, is_instan_darurat=True)
-    # RE-ENTRY INSTAN
     print(f"[RE-ENTRY] Langsung BUY balik di {price} setelah sell instan")
     time.sleep(1)
     if not is_price_exist(price): place_order_real("BUY", price, hitung_qty_aman(price), is_reentry=True)
@@ -248,7 +247,7 @@ def cek_signal_sell(price):
     target_grid = min(grid_atas); _, saldo_btc = get_all_balance()
     qty = hitung_qty_aman(target_grid)
     if saldo_btc < qty: return None, None, False
-    ada_buy = is_price_exist(target_grid) # CEK BINANCE
+    ada_buy = is_price_exist(target_grid)
     return ("SELL", target_grid, ada_buy)
 
 # ========== ANTI SPAM SALDO + NUNGGU ==========
@@ -279,7 +278,7 @@ def cek_signal_buy(price):
     grid_bawah = [g for g in grid_levels if g < price]
     if not grid_bawah: return None, None
     target_grid = max(grid_bawah)
-    if is_price_exist(target_grid): return None, None # CEK BINANCE
+    if is_price_exist(target_grid): return None, None
     qty = hitung_qty_aman(target_grid); fee = get_fee_rate(); butuh_usdt = hitung_butuh_modal(target_grid, qty, fee)
     saldo_usdt, _ = get_all_balance()
     if saldo_usdt >= butuh_usdt: return "BUY", target_grid
@@ -290,9 +289,9 @@ async def main():
     global START_TIME, NOTIF_FLAGS; START_TIME = time.time()
     auto_create_table(); get_binance_rules(SYMBOL); update_grid_manager()
     saldo_usdt, saldo_btc = get_all_balance(); harga_sekarang = get_price()
-    send_telegram(f"🤖 <b>Bot V11.23 REAL MODE</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    send_telegram(f"🤖 <b>Bot V11.24 FIX</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
-    print("Bot V11.23 MODE REAL. Menunggu 10 menit untuk buy pertama...")
+    print("Bot V11.24 MODE REAL. Menunggu 10 menit untuk buy pertama...")
 
     while True:
         try:
