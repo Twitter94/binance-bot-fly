@@ -5,7 +5,7 @@ primary_region = "sin"
   dockerfile = "Dockerfile"
 
 [[services]]
-  processes = ["app"] # <-- INI PENGGANTI [processes]
+  processes = ["app"]
   protocol = "tcp"
   internal_port = 8080
   auto_stop_machines = false
