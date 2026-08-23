@@ -6,10 +6,9 @@ import hmac
 import hashlib
 import gc
 from urllib.parse import urlencode
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ========== CONFIG ==========
-# INI UDah DISAMAIN SAMA SECRET FLY KAMU
 BINANCE_API_KEY = os.getenv("API_KEY")
 BINANCE_SECRET = os.getenv("API_SECRET")
 SUPABASE_URL = os.getenv("SUPA_URL")
@@ -27,15 +26,21 @@ BUFFER_USDT = 0.5
 ATR_PERIOD = 14
 ATR_TIMEFRAME = "1h"
 ATR_MULTIPLIER = 0.5
-ATR_UPDATE_HOUR = 0
+ATR_UPDATE_HOUR_UTC = 17 # 17:00 UTC = 00:00 WIB
 GRID_MIN = 250
 GRID_MAX = 1000
+
+# ========== CONFIG MODE PEMANASAN ==========
+WAIT_FIRST_BUY = 600 # 10 menit dalam detik
+FIRST_BUY_DONE = False
+START_TIME = time.time()
 
 # ========== GLOBAL ==========
 BASE_URL = "https://api.binance.com"
 BINANCE_RULES = {}
 GRID_MANAGER = {"grid_step": GRID_MIN, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
+WIB = timezone(timedelta(hours=7))
 
 SB_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -185,33 +190,33 @@ def get_atr(symbol, period=14, interval="1h"):
 
 def update_grid_manager():
     global GRID_MANAGER, DAILY_STATS
-    now = datetime.now(timezone.utc).astimezone()
-    hari_ini = now.strftime("%Y-%m-%d")
+    now_wib = datetime.now(WIB) # PAKE WAKTU WIB
+    hari_ini_wib = now_wib.strftime("%Y-%m-%d")
 
-    if DAILY_STATS["date"]!= hari_ini:
+    if DAILY_STATS["date"]!= hari_ini_wib:
         if DAILY_STATS["date"] is not None and DAILY_STATS["trade_count"] > 0:
             saldo_usdt, saldo_btc = get_all_balance()
             total_equity = saldo_usdt + (saldo_btc * get_price())
-            msg = f"[LAPORAN HARIAN {DAILY_STATS['date']}]\nTotal Trade: {DAILY_STATS['trade_count']}\nProfit: {DAILY_STATS['profit_usdt']:.2f} USDT\nEquity: {total_equity:.2f} USDT"
+            msg = f"[LAPORAN HARIAN {DAILY_STATS['date']} WIB]\nTotal Trade: {DAILY_STATS['trade_count']}\nProfit: {DAILY_STATS['profit_usdt']:.2f} USDT\nEquity: {total_equity:.2f} USDT"
             send_telegram(msg)
-        DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": hari_ini}
+        DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": hari_ini_wib}
 
-    if now.hour == ATR_UPDATE_HOUR and GRID_MANAGER["date"]!= hari_ini:
+    # CEK JAM 17 UTC = JAM 0 WIB
+    if now_wib.hour == 0 and GRID_MANAGER["date"]!= hari_ini_wib:
         atr = get_atr(SYMBOL, ATR_PERIOD, ATR_TIMEFRAME)
         grid_hitungan = atr * ATR_MULTIPLIER
         if grid_hitungan < GRID_MIN: grid_step = GRID_MIN
         elif grid_hitungan > GRID_MAX: grid_step = GRID_MAX
         else: grid_step = round(grid_hitungan / 50) * 50
-        GRID_MANAGER = {"grid_step": grid_step, "date": hari_ini, "atr": atr}
+        GRID_MANAGER = {"grid_step": grid_step, "date": hari_ini_wib, "atr": atr}
         saldo_usdt, saldo_btc = get_all_balance()
-        msg = f"[00:00] <b>ATR UPDATE</b>\nATR: {atr:.2f}\nGrid: {grid_step}\n\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}"
+        msg = f"[00:00 WIB] <b>ATR UPDATE</b>\nATR: {atr:.2f}\nGrid: {grid_step}\n\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}"
         send_telegram(msg)
-    
-    # FIX REKURSIF: SET MANUAL JANGAN PANGGIL DIRI SENDIRI
+
     if GRID_MANAGER["date"] is None:
-        GRID_MANAGER["date"] = hari_ini
+        GRID_MANAGER["date"] = hari_ini_wib
         GRID_MANAGER["grid_step"] = GRID_MIN
-        
+
     return GRID_MANAGER["grid_step"]
 
 def generate_grid_levels(harga_tengah, grid_step):
@@ -275,7 +280,7 @@ def place_order_real(side, price, qty, is_reentry=False, is_instan_darurat=False
     msg = f"{emoji} <b>{side}{tipe}</b>\nSymbol: {SYMBOL}\nPrice: {price}\nQty: {qty}"
     if side == "BUY":
         msg += f"\n<b>Butuh Modal:</b> {butuh_modal:.2f} USDT"
-    msg += f"\n\n<b>Saldo Sisa:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}\nTime: {datetime.now().strftime('%H:%M:%S')}"
+    msg += f"\n\n<b>Saldo Sisa:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}\nTime: {datetime.now(WIB).strftime('%H:%M:%S')} WIB"
     send_telegram(msg)
     return order
 
@@ -316,12 +321,22 @@ def cek_signal_sell(price):
 
     _, saldo_btc = get_all_balance()
     qty = hitung_qty_aman(target_grid)
-    if saldo_btc < qty: return None, None, False
+    if saldo_btc < qty: return None, False
 
     ada_buy = len(sb_select("orders", f"price=eq.{target_grid}&side=eq.BUY&status=eq.FILLED")) > 0
     return ("SELL", target_grid, False) if ada_buy else ("SELL", target_grid, True)
 
 def cek_signal_buy(price):
+    global FIRST_BUY_DONE
+
+    if not FIRST_BUY_DONE:
+        sisa = WAIT_FIRST_BUY - (time.time() - START_TIME)
+        if sisa > 0:
+            print(f"[PEMANASAN] Tunggu {int(sisa)}s lagi baru boleh buy pertama")
+            return None, None
+        else:
+            print("[PEMANASAN] Selesai. Buy pertama diizinkan")
+
     grid_step = update_grid_manager()
     grid_levels = generate_grid_levels(price, grid_step)
     grid_bawah = [g for g in grid_levels if g < price]
@@ -334,21 +349,29 @@ def cek_signal_buy(price):
     fee = get_fee_rate()
     butuh_usdt = hitung_butuh_modal(target_grid, qty, fee)
     saldo_usdt, _ = get_all_balance()
-    return ("BUY", target_grid) if saldo_usdt >= butuh_usdt else (None, None)
+
+    if saldo_usdt >= butuh_usdt:
+        FIRST_BUY_DONE = True
+        return "BUY", target_grid
+    else:
+        return None, None
 
 # ========== LOOP UTAMA ==========
 async def main():
+    global START_TIME
+    START_TIME = time.time()
+
     auto_create_table()
     get_binance_rules(SYMBOL)
     update_grid_manager()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"🤖 <b>Bot V11.11 Jalan</b>\nMode: REAL | Auto Table ON\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    send_telegram(f"🤖 <b>Bot V11.13 Jalan</b>\nMode: REAL | Pemanasan 10 Menit ON | ATR Jam 00:00 WIB\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
 
     price = get_price()
     cek_sell_instan_darurat(price)
     await asyncio.sleep(3)
 
-    print("Bot V11.11 MODE REAL. Grid Normal Jalan")
+    print("Bot V11.13 MODE REAL. Menunggu 10 menit untuk buy pertama...")
 
     while True:
         try:
