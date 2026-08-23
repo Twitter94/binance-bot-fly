@@ -49,12 +49,17 @@ NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
 
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
-# ========== AUTO CREATE TABLE 1X - FIX ANTI 404 ==========
+# ========== AUTO CREATE TABLE 1X - FIX ANTI 404 + FORCE RESET ==========
 def auto_create_table():
+    # BARU: BISA HAPUS FLAG PAKE SECRET DARI WEB
+    if os.getenv("FORCE_RESET") == "true":
+        if os.path.exists(FLAG_FILE):
+            os.remove(FLAG_FILE)
+            send_telegram("♻️ Flag dihapus. Reset tabel...")
+
     if os.path.exists(FLAG_FILE):
         return
 
-    # Cara baru: INSERT dummy. Paling ampuh buat bikin tabel
     data_dummy = {
         "price": 0,
         "qty": 0,
@@ -65,15 +70,12 @@ def auto_create_table():
 
     try:
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data_dummy, timeout=10)
-
         if r.status_code in [200, 201]:
             send_telegram("✅ Tabel `orders` auto dibuat 1x")
-            # Hapus data dummy
             requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?binance_order_id=eq.999999", headers=SB_HEADERS, timeout=5)
             with open(FLAG_FILE, "w") as f: f.write("done")
         else:
             send_telegram(f"⚠️ GAGAL BUAT TABEL. Cek: 1.SUPA_KEY sb_secret 2.RLS mati\nErr: {r.status_code} {r.text[:100]}")
-
     except Exception as e:
         send_telegram(f"⚠️ Auto create tabel error: {e}")
 
@@ -253,7 +255,7 @@ async def main():
     global START_TIME; START_TIME = time.time()
     auto_create_table()
     get_binance_rules(SYMBOL)
-    send_telegram("🤖 <b>Bot V11.61 START</b> FIX 404")
+    send_telegram("🤖 <b>Bot V11.62 START</b> FIX 404 + FORCE RESET")
     harga_sekarang = get_price(); update_atr_manager()
     saldo_usdt, saldo_btc = get_all_balance()
     send_telegram(f"<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}")
