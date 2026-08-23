@@ -161,6 +161,11 @@ def hitung_qty_aman(harga, target_usdt=5):
     if qty * harga < BINANCE_RULES['min_notional']: qty += step
     return round(qty, 8)
 
+def format_qty(qty): # TAMBAHAN BARU ANTI ERROR BINANCE
+    step = BINANCE_RULES['step_size']
+    qty = round(qty / step) * step
+    return ('%.8f' % qty).rstrip('0').rstrip('.')
+
 def hitung_butuh_modal(price, qty, fee):
     return (price * qty) + (price * qty * fee * 2) + BUFFER_USDT
 
@@ -187,7 +192,7 @@ def generate_grid_levels(harga_tengah, grid_step):
         if level > 0: levels.append(level)
     return sorted(list(set(levels)))
 
-# ========== EKSEKUSI FIX HARGA V11.30 TANPA COOLDOWN ==========
+# ========== EKSEKUSI FIX HARGA V11.31 FIX QUANTITY ==========
 def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=False):
     global DAILY_STATS, NOTIF_FLAGS, BUY_HISTORY, LAST_ERROR_MSG
 
@@ -205,8 +210,10 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
         if msg!= LAST_ERROR_MSG: send_telegram(msg); LAST_ERROR_MSG = msg
         print(msg); return None
 
-    print(f"===== [REAL] TEMBAK {side} {qty} BTC di ~{price_grid} =====")
-    order = signed_request("POST", "/api/v3/order", {"symbol": SYMBOL, "side": side, "type": "MARKET", "quantity": qty})
+    qty_str = format_qty(qty) # FIX: CONVERT KE STRING BERSIH
+
+    print(f"===== [REAL] TEMBAK {side} {qty_str} BTC di ~{price_grid} =====")
+    order = signed_request("POST", "/api/v3/order", {"symbol": SYMBOL, "side": side, "type": "MARKET", "quantity": qty_str}) # FIX: PAKE QTY_STR
 
     # KUNCI 3: GAGAL NOTIF 1X + KASIH ALASAN
     if 'orderId' not in order:
@@ -254,7 +261,7 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
         send_telegram("✅ <b>Saldo sudah masuk. Bot lanjut normal</b>")
 
     emoji = "🟢" if side == "BUY" else "🔴"; tipe = " <b>SELL INSTAN DARURAT</b>" if is_instan_darurat else " <b>RE-ENTRY GRID</b>" if is_reentry else ""
-    msg = f"{emoji} <b>{side}{tipe}</b>\nSymbol: {SYMBOL}\nPrice: {harga_isi}\nQty: {qty}"
+    msg = f"{emoji} <b>{side}{tipe}</b>\nSymbol: {SYMBOL}\nPrice: {harga_isi}\nQty: {qty_str}" # FIX: PAKE QTY_STR
     if side == "BUY": msg += f"\n<b>Butuh Modal:</b> {butuh_modal:.2f} USDT"
     msg += f"\n\n<b>Saldo Sisa:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}"
     send_telegram(msg); return order
@@ -325,9 +332,9 @@ async def main():
     global START_TIME, NOTIF_FLAGS; START_TIME = time.time()
     auto_create_table(); get_binance_rules(SYMBOL); update_grid_manager()
     saldo_usdt, saldo_btc = get_all_balance(); harga_sekarang = get_price()
-    send_telegram(f"🤖 <b>Bot V11.30 NO COOLDOWN</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    send_telegram(f"🤖 <b>Bot V11.31 FIX QUANTITY</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
-    print("Bot V11.30 MODE REAL. Menunggu 10 detik untuk buy pertama...")
+    print("Bot V11.31 MODE REAL. Menunggu 10 detik untuk buy pertama...")
 
     while True:
         try:
