@@ -31,17 +31,18 @@ GRID_MIN = 250
 GRID_MAX = 1000
 
 # ========== CONFIG MODE PEMANASAN ==========
-WAIT_FIRST_BUY = 600 # 10 menit
+WAIT_FIRST_BUY = 10 # UBAH JADI 10 DETIK DULU BUAT TEST
 FIRST_BUY_DONE = False
 START_TIME = time.time()
 
 # ========== GLOBAL ==========
 BASE_URL = "https://api.binance.com"
-BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001} # DEFAULT LANGSUNG
+BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 GRID_MANAGER = {"grid_step": GRID_MIN, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
 WIB = timezone(timedelta(hours=7))
 NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
+LAST_BUY_PRICE = 0 # FLAG BARU ANTI SPAM 3 DETIK
 
 SB_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -50,7 +51,7 @@ SB_HEADERS = {
     "Prefer": "return=minimal"
 }
 
-# ========== FUNGSI SUPABASE - CUMA BUAT ARSIP ==========
+# ========== FUNGSI SUPABASE ==========
 def sb_query(sql):
     try:
         url = f"{SUPABASE_URL}/rest/v1/rpc/exec_sql"
@@ -60,7 +61,7 @@ def sb_query(sql):
         return r.status_code
     except: return 500
 
-def sb_select(table, filters=""): # <-- INI YANG KURANG TADI
+def sb_select(table, filters=""):
     try:
         url = f"{SUPABASE_URL}/rest/v1/{table}?{filters}"
         r = requests.get(url, headers=SB_HEADERS, timeout=5)
@@ -134,9 +135,10 @@ def delete_filled_buys_up_to(price_limit):
     sb_delete(TABEL, f"side=eq.BUY&price=lte.{price_limit}")
 
 def is_price_exist(price):
-    bin_orders = signed_request("GET", "/api/v3/openOrders", {"symbol": SYMBOL})
-    for o in bin_orders:
-        if abs(float(o['price']) - price) < 0.01 and o['side'] == 'BUY':
+    # FIX: CEK DI RIWAYAT 5 MENIT TERAKHIR JUGA, BUKAN CUMA OPEN ORDERS
+    trades = signed_request("GET", "/api/v3/myTrades", {"symbol": SYMBOL, "limit": 100, "startTime": int((time.time() - 300) * 1000)})
+    for t in trades:
+        if abs(float(t['price']) - price) < 0.5 and t['isBuyer']:
             return True
     return False
 
@@ -185,8 +187,12 @@ def generate_grid_levels(harga_tengah, grid_step):
 
 # ========== EKSEKUSI FIX HARGA ==========
 def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=False):
-    global DAILY_STATS, NOTIF_FLAGS
-    if side == "BUY" and is_price_exist(price_grid): print(f"SKIP BUY: Harga {price_grid} sudah ada ordernya di Binance"); return None
+    global DAILY_STATS, NOTIF_FLAGS, LAST_BUY_PRICE
+    # FIX 3: ANTI SPAM 3 DETIK DI HARGA YANG SAMA
+    if time.time() - LAST_BUY_PRICE < 3 and side == "BUY":
+        print(f"SKIP: Baru buy 3 detik lalu"); return None
+
+    if side == "BUY" and is_price_exist(price_grid): print(f"SKIP BUY: Harga {price_grid} sudah ada di riwayat"); return None
 
     print(f"===== [REAL] TEMBAK {side} {qty} BTC di ~{price_grid} =====")
     order = signed_request("POST", "/api/v3/order", {"symbol": SYMBOL, "side": side, "type": "MARKET", "quantity": qty})
@@ -196,11 +202,18 @@ def place_order_real(side, price_grid, qty, is_reentry=False, is_instan_darurat=
         harga_isi = round(harga_isi, 2)
     else: harga_isi = float(order.get('avgPrice', price_grid))
 
+    # FIX 1: UPDATE SALDO DULU BARU KIRIM TELE
+    saldo_usdt, saldo_btc = get_all_balance()
+    time.sleep(0.5) # Kasih jeda 0.5s biar saldo update di binance
+    saldo_usdt, saldo_btc = get_all_balance() # Cek ulang
+
     sb_insert(TABEL, {"price": harga_isi, "side": side, "status": "active"})
 
-    saldo_usdt, saldo_btc = get_all_balance(); fee = get_fee_rate()
+    fee = get_fee_rate()
     butuh_modal = hitung_butuh_modal(harga_isi, qty, fee) if side == "BUY" else 0
     DAILY_STATS["trade_count"] += 1
+
+    if side == "BUY": LAST_BUY_PRICE = time.time() # CATAT WAKTU BUY
 
     if side == "SELL":
         filled_buys = get_filled_buys()
@@ -289,9 +302,9 @@ async def main():
     global START_TIME, NOTIF_FLAGS; START_TIME = time.time()
     auto_create_table(); get_binance_rules(SYMBOL); update_grid_manager()
     saldo_usdt, saldo_btc = get_all_balance(); harga_sekarang = get_price()
-    send_telegram(f"🤖 <b>Bot V11.24 FIX</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    send_telegram(f"🤖 <b>Bot V11.25 ANTI SPAM</b>\nMode: 100% DATA DARI BINANCE\n<b>Harga BTC:</b> {harga_sekarang}\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
-    print("Bot V11.24 MODE REAL. Menunggu 10 menit untuk buy pertama...")
+    print("Bot V11.25 MODE REAL. Menunggu 10 detik untuk buy pertama...")
 
     while True:
         try:
