@@ -1,10 +1,17 @@
+# Base image paling kecil
 FROM python:3.11-slim
 
+# Set folder kerja
 WORKDIR /app
 
-COPY requirements.txt .
+# Copy requirements dulu biar cache
+COPY requirements.txt.
+
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy semua file bot
+COPY..
 
-CMD ["python", "main.py"]
+# Jalanin bot dengan optimasi RAM
+CMD ["python", "-O", "bot.py"]
