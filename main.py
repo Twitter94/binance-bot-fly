@@ -9,8 +9,9 @@ from urllib.parse import urlencode
 from datetime import datetime, timezone
 
 # ========== CONFIG ==========
+# INI UDah DISAMAIN SAMA SECRET FLY KAMU
 BINANCE_API_KEY = os.getenv("API_KEY")
-BINANCE_SECRET = os.getenv("API-SECRET")
+BINANCE_SECRET = os.getenv("API_SECRET")
 SUPABASE_URL = os.getenv("SUPA_URL")
 SUPABASE_KEY = os.getenv("SUPA_KEY")
 TELE_TOKEN = os.getenv("TELE_TOKEN")
@@ -45,7 +46,6 @@ SB_HEADERS = {
 
 # ========== FUNGSI SUPABASE + AUTO CREATE TABEL ==========
 def sb_query(sql):
-    # Buat jalanin SQL langsung buat bikin tabel
     try:
         url = f"{SUPABASE_URL}/rest/v1/rpc/exec_sql"
         headers = SB_HEADERS.copy()
@@ -55,7 +55,6 @@ def sb_query(sql):
     except: return 500
 
 def auto_create_table():
-    # Cek apakah tabel orders ada
     check = sb_select("orders", "select=id&limit=1")
     if isinstance(check, list):
         print("Tabel 'orders' sudah ada")
@@ -144,7 +143,7 @@ def get_price(): return float(requests.get(f"{BASE_URL}/api/v3/ticker/price?symb
 # ========== SUPABASE LOGIC ==========
 def get_filled_buys():
     data = sb_select("orders", "select=price&side=eq.BUY&status=eq.FILLED&order=price.asc")
-    if isinstance(data, str): return [] # kalau error
+    if isinstance(data, str): return []
     return sorted([float(d['price']) for d in data])
 
 def delete_filled_buys_up_to(price_limit):
@@ -207,7 +206,12 @@ def update_grid_manager():
         saldo_usdt, saldo_btc = get_all_balance()
         msg = f"[00:00] <b>ATR UPDATE</b>\nATR: {atr:.2f}\nGrid: {grid_step}\n\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}"
         send_telegram(msg)
-    if GRID_MANAGER["date"] is None: update_grid_manager()
+    
+    # FIX REKURSIF: SET MANUAL JANGAN PANGGIL DIRI SENDIRI
+    if GRID_MANAGER["date"] is None:
+        GRID_MANAGER["date"] = hari_ini
+        GRID_MANAGER["grid_step"] = GRID_MIN
+        
     return GRID_MANAGER["grid_step"]
 
 def generate_grid_levels(harga_tengah, grid_step):
@@ -334,17 +338,17 @@ def cek_signal_buy(price):
 
 # ========== LOOP UTAMA ==========
 async def main():
-    auto_create_table() # <-- KUNCI: BIKIN TABEL OTOMATIS PAS AWAL
+    auto_create_table()
     get_binance_rules(SYMBOL)
     update_grid_manager()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"🤖 <b>Bot V11.10 Jalan</b>\nMode: REAL | Auto Table ON\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
+    send_telegram(f"🤖 <b>Bot V11.11 Jalan</b>\nMode: REAL | Auto Table ON\n<b>Saldo:</b>\nUSDT: {saldo_usdt:.2f}\nBTC: {saldo_btc:.6f}")
 
     price = get_price()
     cek_sell_instan_darurat(price)
     await asyncio.sleep(3)
 
-    print("Bot V11.10 MODE REAL. Grid Normal Jalan")
+    print("Bot V11.11 MODE REAL. Grid Normal Jalan")
 
     while True:
         try:
