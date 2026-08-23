@@ -2,22 +2,17 @@ app = "bahaya"
 primary_region = "sin"
 
 [build]
-dockerfile = "Dockerfile"
+  dockerfile = "Dockerfile"
 
 [[services]]
-  processes = ["app"]
+  processes = ["app"] # <-- INI PENGGANTI [processes]
   protocol = "tcp"
   internal_port = 8080
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
 
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
   memory = "256mb"
-
-[deploy]
-  release_command = ""
-
-[http_service] # <-- KUNCI 24/7 ADA DI SINI
-  auto_stop_machines = false # JANGAN MATI OTOMATIS
-  auto_start_machines = true # NYALA OTOMATIS KALAU RESTART
-  min_machines_running = 1 # SELALU ADA 1 MESIN NYALA
