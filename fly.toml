@@ -1,11 +1,12 @@
 app = "bahaya"
+primary_region = "sin" # Singapore biar deket ke Binance
+
 [build]
-[processes]
-app = "python main.py"
-[[vm]]
-memory = "256mb"
-cpu_kind = "shared"
-cpus = 1
+  builder = "paketobuildpacks/builder:base"
+
 [env]
-  PYTHONUNBUFFERED = "1"
-  
+  # KOSONGIN AJA
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
