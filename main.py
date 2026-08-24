@@ -270,7 +270,7 @@ def cek_order_binance_sudah_ada(price_target): # FIX BUG #1: GANTI KE OPENORDERS
     return False
 
 def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
-    global NOTIF_FLAGS, NOTIF_SENT, BUYING_LOCK, PERLU_REENTRY # TAMBAH PERLU_REENTRY
+    global NOTIF_FLAGS, NOTIF_SENT, BUYING_LOCK, PERLU_REENTRY # FIX: TAMBAH PERLU_REENTRY
 
     if side=="BUY":
         if price_grid in BUYING_LOCK: return
@@ -383,7 +383,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.12 PRO</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.13 PRO</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
