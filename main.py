@@ -357,7 +357,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 
 async def main():
     send_telegram("1. BOT MULAI")
-    global START_TIME, LAST_RECOVERY
+    global START_TIME, LAST_RECOVERY, PERLU_REENTRY # FIX: TAMBAH PERLU_REENTRY
     START_TIME = time.time()
     send_telegram("2. CEK TABEL")
     cek_tabel_supabase()
@@ -383,7 +383,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.13 PRO</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.15 PRO</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
@@ -392,18 +392,22 @@ async def main():
                 recovery_sync()
                 LAST_RECOVERY = time.time()
 
-            # TAMBAH BLOK INI: EKSEKUSI RE-ENTRY DI HARGA MARKET
+            # FIX RE-ENTRY: WAJIB BTC = 0 DULU BARU BOLEH BUY LAGI
             if PERLU_REENTRY:
                 price_sekarang = get_price()
                 if price_sekarang!= 0:
-                    qty_market = hitung_qty_aman(price_sekarang)
-                    usdt_cek, _ = get_all_balance()
-                    butuh = hitung_butuh_modal(price_sekarang, qty_market)
-                    if usdt_cek >= butuh:
-                        send_telegram(f"🔄 <b>EKSEKUSI RE-ENTRY</b>\nSaldo cukup. Buy di harga market {price_sekarang:.2f}")
-                        place_order_real("BUY", price_sekarang, qty_market)
-                        PERLU_REENTRY = False
-                        continue # FIX BUG #1: SKIP BIAR GAK TABRAKAN SAMA GRID
+                    _, btc_cek = get_all_balance() # CEK BTC DULU
+                    if btc_cek < 0.00001: # KALAU BTC HABIS = BERARTI UDAH KEJUAL = BOLEH REENTRY
+                        qty_market = hitung_qty_aman(price_sekarang)
+                        usdt_cek, _ = get_all_balance()
+                        butuh = hitung_butuh_modal(price_sekarang, qty_market)
+                        if usdt_cek >= butuh:
+                            send_telegram(f"🔄 <b>EKSEKUSI RE-ENTRY</b>\nSaldo cukup. Buy di harga market {price_sekarang:.2f}")
+                            place_order_real("BUY", price_sekarang, qty_market)
+                            PERLU_REENTRY = False
+                            continue # FIX BUG #1: SKIP BIAR GAK TABRAKAN SAMA GRID
+                    else:
+                        PERLU_REENTRY = False # ADA BTC = BERARTI BELUM KEJUAL = RESET FLAG
 
             price = get_price()
             if price == 0:
