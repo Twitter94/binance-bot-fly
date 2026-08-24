@@ -59,10 +59,10 @@ def cek_tabel_supabase():
             send_telegram("✅ Koneksi Supabase OK. Tabel `orders` ada")
         else:
             send_telegram(f"⚠️ Supabase Error: {r.status_code}. Retry 5 detik")
-            time.sleep(5) # JANGAN 999 LAGI
+            time.sleep(5)
     except Exception as e:
         send_telegram(f"⚠️ Gagal konek Supabase: {repr(e)}. Retry 5 detik")
-        time.sleep(5) # JANGAN 999 LAGI
+        time.sleep(5)
 
 def sb_insert(data):
     try:
@@ -208,16 +208,30 @@ def cek_sell_instan_darurat(price):
                 send_telegram(f"⚠️ <b>SELL DARURAT</b>\n{qty} BTC @ {price:.2f}\nSaldo USDT: {usdt:.2f}")
 
 def recovery_sync():
+    send_telegram("🔄 Mulai Recovery Sync...")
     data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 100})
-    if not isinstance(data_binance, list): return
+    if not isinstance(data_binance, list):
+        send_telegram("⚠️ Recovery Gagal: Data Binance kosong")
+        return
+
+    count = 0
     for o in data_binance:
         if o['side'] == 'BUY' and o['status'] == 'FILLED':
+            # FIX CRASH: skip order yg fills nya kosong
+            if 'fills' not in o or len(o['fills']) == 0:
+                continue
+
             ada_di_db = sb_select(f"binance_order_id=eq.{o['orderId']}")
             if len(ada_di_db) == 0:
                 harga = float(o['fills'][0]['price'])
                 qty = float(o['executedQty'])
-                sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": o['orderId']})
-                send_telegram(f"✅ <b>RECOVERY</b>\nOrderID: {o['orderId']}\nHarga: {harga:.2f}")
+                insert_res = sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": o['orderId']})
+                if len(insert_res) > 0:
+                    count += 1
+                    send_telegram(f"✅ <b>RECOVERY</b>\nOrderID: {o['orderId']}\nHarga: {harga:.2f}")
+
+    if count == 0:
+        send_telegram("✅ Recovery Selesai: Tidak ada order baru")
 
 def cek_order_binance_sudah_ada(price_target, toleransi=10):
     data = signed_request("GET", "/api/v3/myTrades", {"symbol":SYMBOL, "limit": 500})
@@ -275,14 +289,14 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 place_order_real("BUY", price_grid, qty)
 
 async def main():
-    send_telegram("1. BOT MULAI") # TEST 1
+    send_telegram("1. BOT MULAI")
     global START_TIME, LAST_RECOVERY
     START_TIME = time.time()
-    send_telegram("2. CEK TABEL") # TEST 2
+    send_telegram("2. CEK TABEL")
     cek_tabel_supabase()
-    send_telegram("3. AMBIL RULE") # TEST 3
+    send_telegram("3. AMBIL RULE")
     get_binance_rules(SYMBOL)
-    send_telegram("4. NUNGGU ATR") # TEST 4
+    send_telegram("4. NUNGGU ATR")
 
     retry = 0
     while ATR_MANAGER["jarak"] is None:
@@ -293,14 +307,14 @@ async def main():
             send_telegram("⚠️ ATR Gagal 10x. Pakai jarak default 500")
         await asyncio.sleep(2)
 
-    send_telegram("5. RECOVERY") # TEST 5
+    send_telegram("5. RECOVERY")
     recovery_sync()
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.1 DEBUG</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.2 FIX</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
-    send_telegram("7. MASUK LOOP UTAMA") # TEST 7
+    send_telegram("7. MASUK LOOP UTAMA")
     while True:
         try:
             if time.time() - LAST_RECOVERY > RECOVERY_INTERVAL:
