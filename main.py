@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 BINANCE_API_KEY = os.getenv("API_KEY")
 BINANCE_SECRET = os.getenv("API_SECRET")
 SUPABASE_URL = os.getenv("SUPA_URL")
-SUPABASE_KEY = os.getenv("SUPA_KEY") # HARUS sb_secret_...
+SUPABASE_KEY = os.getenv("SUPA_KEY") # WAJIB: service_role key sb_secret_xxx
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 TELE_CHAT_ID = os.getenv("TELE_CHAT_ID")
 
@@ -38,7 +38,6 @@ MAX_JARAK = 1000
 WAIT_FIRST_BUY = 10
 FIRST_BUY_DONE = False
 START_TIME = time.time()
-FLAG_FILE = "/tmp/table_created.flag"
 
 BASE_URL = "https://api.binance.com"
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
@@ -49,41 +48,29 @@ NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
 
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
-# ========== AUTO CREATE TABLE 1X - FIX ANTI 404 + FORCE RESET ==========
-def auto_create_table():
-    # BARU: BISA HAPUS FLAG PAKE SECRET DARI WEB
-    if os.getenv("FORCE_RESET") == "true":
-        if os.path.exists(FLAG_FILE):
-            os.remove(FLAG_FILE)
-            send_telegram("♻️ Flag dihapus. Reset tabel...")
-
-    if os.path.exists(FLAG_FILE):
-        return
-
-    data_dummy = {
-        "price": 0,
-        "qty": 0,
-        "side": "INIT",
-        "status": "INIT",
-        "binance_order_id": 999999
-    }
-
+# ========== CEK TABEL SAJA - GAK BIKIN OTOMATIS ==========
+def cek_tabel_supabase():
     try:
-        r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data_dummy, timeout=10)
-        if r.status_code in [200, 201]:
-            send_telegram("✅ Tabel `orders` auto dibuat 1x")
-            requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?binance_order_id=eq.999999", headers=SB_HEADERS, timeout=5)
-            with open(FLAG_FILE, "w") as f: f.write("done")
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?limit=1", headers=SB_HEADERS, timeout=5)
+        if r.status_code == 200:
+            send_telegram("✅ Koneksi Supabase OK. Tabel `orders` ada")
+        elif r.status_code == 404:
+            send_telegram("❌ FATAL: Tabel `orders` belum ada. Bikin di Supabase SQL dulu")
+            time.sleep(999) # stop biar gak spam
         else:
-            send_telegram(f"⚠️ GAGAL BUAT TABEL. Cek: 1.SUPA_KEY sb_secret 2.RLS mati\nErr: {r.status_code} {r.text[:100]}")
+            send_telegram(f"❌ FATAL: Supabase error {r.status_code}. Cek SUPA_KEY service_role")
+            time.sleep(999)
     except Exception as e:
-        send_telegram(f"⚠️ Auto create tabel error: {e}")
+        send_telegram(f"❌ FATAL: Gagal konek Supabase: {e}")
+        time.sleep(999)
 
-# ========== FUNGSI SUPABASE ==========
+# ========== FUNGSI SUPABASE ANTI CRASH ==========
 def sb_insert(data):
     try:
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
-        r.raise_for_status()
+        if r.status_code not in [200,201]:
+            send_telegram(f"❌ SB INSERT: {r.status_code} {r.text[:100]}")
+            return []
         return r.json()
     except Exception as e:
         if not NOTIF_FLAGS["error"]: send_telegram(f"❌ SB INSERT: {e}")
@@ -92,10 +79,10 @@ def sb_insert(data):
 def sb_select(filters=""):
     try:
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        if not NOTIF_FLAGS["error"]: send_telegram(f"❌ SB SELECT: {e}")
+        if r.status_code!= 200: return []
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except:
         return []
 
 def sb_delete(order_id):
@@ -253,9 +240,9 @@ def place_order_real(side, price_grid, qty, order_data=None):
 
 async def main():
     global START_TIME; START_TIME = time.time()
-    auto_create_table()
+    cek_tabel_supabase() # GANTI auto_create_table
     get_binance_rules(SYMBOL)
-    send_telegram("🤖 <b>Bot V11.62 START</b> FIX 404 + FORCE RESET")
+    send_telegram("🤖 <b>Bot V11.62.2 ANTI ERROR</b>")
     harga_sekarang = get_price(); update_atr_manager()
     saldo_usdt, saldo_btc = get_all_balance()
     send_telegram(f"<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}")
