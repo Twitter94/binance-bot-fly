@@ -28,7 +28,7 @@ BUFFER_USDT = 0.5
 TABEL = "orders"
 TARGET_USDT_PER_BUY = 5
 RECOVERY_INTERVAL = 3600
-RE_ENTRY_MODE = True # ON/OFF mode re-entry
+RE_ENTRY_MODE = True
 
 ATR_PERIOD = 14
 ATR_TIMEFRAME = "1h"
@@ -48,16 +48,21 @@ ATR_MANAGER = {"jarak": None, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
 WIB = timezone(timedelta(hours=7))
 NOTIF_FLAGS = {"error": False, "saldo_kurang": False}
-NOTIF_SENT = {"buy": None, "sell": None} # PENGAMAN ANTI SPAM
+NOTIF_SENT = {"buy": None, "sell": None}
 
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
 def cek_tabel_supabase():
     try:
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?limit=1", headers=SB_HEADERS, timeout=5)
-        if r.status_code == 200: send_telegram("✅ Koneksi Supabase OK. Tabel `orders` ada")
-        else: time.sleep(999)
-    except: time.sleep(999)
+        if r.status_code == 200:
+            send_telegram("✅ Koneksi Supabase OK. Tabel `orders` ada")
+        else:
+            send_telegram(f"⚠️ Supabase Error: {r.status_code}. Retry 5 detik")
+            time.sleep(5) # JANGAN 999 LAGI
+    except Exception as e:
+        send_telegram(f"⚠️ Gagal konek Supabase: {repr(e)}. Retry 5 detik")
+        time.sleep(5) # JANGAN 999 LAGI
 
 def sb_insert(data):
     try:
@@ -133,12 +138,17 @@ def send_telegram(msg):
     except: pass
 
 def get_atr(symbol, period=ATR_PERIOD, interval=ATR_TIMEFRAME):
-    r = requests.get(f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=5)
-    data = r.json(); tr_list = []
-    for i in range(1, len(data)):
-        high, low, prev_close = float(data[i][2]), float(data[i][3]), float(data[i-1][4])
-        tr = max(high-low, abs(high-prev_close), abs(low-prev_close)); tr_list.append(tr)
-    return sum(tr_list[-period:]) / period
+    try:
+        r = requests.get(f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=10)
+        r.raise_for_status()
+        data = r.json(); tr_list = []
+        for i in range(1, len(data)):
+            high, low, prev_close = float(data[i][2]), float(data[i][3]), float(data[i-1][4])
+            tr = max(high-low, abs(high-prev_close), abs(low-prev_close)); tr_list.append(tr)
+        return sum(tr_list[-period:]) / period
+    except Exception as e:
+        send_telegram(f"❌ ERROR GET ATR: {repr(e)}")
+        return 0
 
 def update_atr_manager():
     global ATR_MANAGER, DAILY_STATS
@@ -146,6 +156,7 @@ def update_atr_manager():
     if DAILY_STATS["date"]!= hari_ini_wib: DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": hari_ini_wib}
     if ATR_MANAGER["date"]!= hari_ini_wib and now_wib.hour >= ATR_UPDATE_HOUR:
         atr_baru = get_atr(SYMBOL)
+        if atr_baru == 0: return
         jarak_mentah = atr_baru * ATR_MULTIPLIER
         jarak = max(MIN_JARAK, min(jarak_mentah, MAX_JARAK))
         ATR_MANAGER = {"jarak": jarak, "atr": atr_baru, "date": hari_ini_wib}
@@ -264,20 +275,32 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 place_order_real("BUY", price_grid, qty)
 
 async def main():
+    send_telegram("1. BOT MULAI") # TEST 1
     global START_TIME, LAST_RECOVERY
     START_TIME = time.time()
+    send_telegram("2. CEK TABEL") # TEST 2
     cek_tabel_supabase()
+    send_telegram("3. AMBIL RULE") # TEST 3
     get_binance_rules(SYMBOL)
-    send_telegram("⏳ Menunggu data ATR dari Binance...")
+    send_telegram("4. NUNGGU ATR") # TEST 4
+
+    retry = 0
     while ATR_MANAGER["jarak"] is None:
         update_atr_manager()
+        retry += 1
+        if retry > 10:
+            ATR_MANAGER["jarak"] = 500
+            send_telegram("⚠️ ATR Gagal 10x. Pakai jarak default 500")
         await asyncio.sleep(2)
+
+    send_telegram("5. RECOVERY") # TEST 5
     recovery_sync()
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"🤖 <b>Bot V11.62.9 FINAL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.1 DEBUG</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
+    send_telegram("7. MASUK LOOP UTAMA") # TEST 7
     while True:
         try:
             if time.time() - LAST_RECOVERY > RECOVERY_INTERVAL:
