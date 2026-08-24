@@ -92,9 +92,16 @@ def signed_request(method, endpoint, params={}):
         url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
         headers = {'X-MBX-APIKEY': BINANCE_API_KEY}
         r = requests.request(method, url, headers=headers, timeout=10)
-        r.raise_for_status()
+
+        if r.status_code!= 200:
+            send_telegram(f"❌ BINANCE ERROR {r.status_code}\n<code>{r.text}</code>")
+            return {}
+
         return r.json()
-    except: return {}
+
+    except Exception as e:
+        send_telegram(f"❌ SIGNED_REQUEST CRASH\n<code>{repr(e)}</code>")
+        return {}
 
 def get_price():
     try: # FIX BUG 1: HAPUS RECURSIVE
