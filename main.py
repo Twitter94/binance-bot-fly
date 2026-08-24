@@ -97,11 +97,13 @@ def signed_request(method, endpoint, params={}):
     except: return {}
 
 def get_price():
-    try:
+    try: # FIX BUG 1: HAPUS RECURSIVE
         r = requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=5)
         r.raise_for_status()
         return float(r.json()['price'])
-    except: time.sleep(10); return get_price()
+    except:
+        time.sleep(10)
+        return 0 # balikin 0 biar di skip
 
 def get_all_balance():
     data = signed_request("GET", "/api/v3/account")
@@ -213,14 +215,11 @@ def recovery_sync():
     if not isinstance(data_binance, list):
         send_telegram("⚠️ Recovery Gagal: Data Binance kosong")
         return
-
     count = 0
     for o in data_binance:
         if o['side'] == 'BUY' and o['status'] == 'FILLED':
-            # FIX CRASH: skip order yg fills nya kosong
             if 'fills' not in o or len(o['fills']) == 0:
                 continue
-
             ada_di_db = sb_select(f"binance_order_id=eq.{o['orderId']}")
             if len(ada_di_db) == 0:
                 harga = float(o['fills'][0]['price'])
@@ -229,7 +228,6 @@ def recovery_sync():
                 if len(insert_res) > 0:
                     count += 1
                     send_telegram(f"✅ <b>RECOVERY</b>\nOrderID: {o['orderId']}\nHarga: {harga:.2f}")
-
     if count == 0:
         send_telegram("✅ Recovery Selesai: Tidak ada order baru")
 
@@ -258,15 +256,33 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             NOTIF_FLAGS["saldo_kurang"]=False
 
         res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
-        if 'orderId' in res:
-            insert_res = sb_insert({"price":price_grid, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": res['orderId']})
-            if len(insert_res) == 0:
-                send_telegram(f"⚠️ <b>BUY GAGAL CATAT DB</b>\nHarga: {price_grid:.2f}\nOrderID: {res['orderId']}")
+        if 'orderId' not in res:
+            send_telegram(f"❌ BUY GAGAL KE BINANCE: {res}")
+            return
+        order_id = res['orderId']
+
+        # ====== SELF HEALING: RETRY INSERT 3X ======
+        insert_success = False
+        for i in range(3):
+            insert_res = sb_insert({"price":price_grid, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id})
+            if len(insert_res) > 0:
+                insert_success = True
+                break
+            time.sleep(2)
+
+        if not insert_success:
+            send_telegram(f"⚠️ <b>DB ERROR 3X</b>\nOrderID: {order_id}\nOTOMATIS JUAL KEMBALI BIAR AMAN")
+            sell_res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+            if 'orderId' in sell_res:
+                send_telegram(f"✅ <b>DARURAT SELL BERHASIL</b>\nDana aman. Rugi fee 0.1%")
             else:
-                if NOTIF_SENT["buy"]!= price_grid:
-                    send_telegram(f"🟢 <b>BUY TERISI</b>\nHarga: {price_grid:.2f}\nQty: {qty}\nButuh: {butuh:.2f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
-                    NOTIF_SENT["buy"] = price_grid
-                    NOTIF_SENT["sell"] = None
+                send_telegram(f"❌ <b>KRITIS</b> GAGAL JUAL DARURAT. CEK BINANCE SEKARANG!")
+            return
+
+        if NOTIF_SENT["buy"]!= price_grid:
+            send_telegram(f"🟢 <b>BUY TERISI</b>\nHarga: {price_grid:.2f}\nQty: {qty}\nButuh: {butuh:.2f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
+            NOTIF_SENT["buy"] = price_grid
+            NOTIF_SENT["sell"] = None
 
     if side=="SELL":
         if float(btc) < float(qty): return
@@ -296,6 +312,15 @@ async def main():
     cek_tabel_supabase()
     send_telegram("3. AMBIL RULE")
     get_binance_rules(SYMBOL)
+
+    # FIX BUG 3: CEK WAKTU BINANCE
+    try:
+        server_time = requests.get(f"{BASE_URL}/api/v3/time", timeout=5).json()['serverTime']
+        selisih = abs(server_time - int(time.time()*1000))
+        if selisih > 1000:
+            send_telegram(f"⚠️ <b>WAKTU VPS MELENCENG {selisih}ms</b>\nOrder bisa gagal. Restart VPS!")
+    except: pass
+
     send_telegram("4. NUNGGU ATR")
 
     retry = 0
@@ -312,7 +337,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.2 FIX</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.4 FINAL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
@@ -322,6 +347,10 @@ async def main():
                 LAST_RECOVERY = time.time()
 
             price = get_price()
+            if price == 0: # FIX BUG 1: SKIP KALAU HARGA 0
+                await asyncio.sleep(10)
+                continue
+
             signal_buy, grid_buy = cek_signal_buy(price)
             signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
 
