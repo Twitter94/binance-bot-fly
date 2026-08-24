@@ -352,6 +352,8 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 send_telegram(f"🟢 <b>BUY TERISI</b>\nHarga: {price_grid:.2f}\nQty: {qty}\nFee: {fee_buy:.4f} USDT\nButuh: {butuh:.2f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}") # TAMBAH FEE DI NOTIF
                 NOTIF_SENT["buy"] = price_grid
                 NOTIF_SENT["sell"] = None
+        except Exception as e: # <-- INI SATU2NYA YG DITAMBAH
+            send_telegram(f"❌ ERROR BUY: {repr(e)}")
         finally:
             BUYING_LOCK.discard(price_grid)
 
@@ -419,7 +421,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.19 PRO</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.20 PRO</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
@@ -446,4 +448,16 @@ async def main():
             if price == 0:
                 await asyncio.sleep(10)
                 continue
-            signal_buy, grid_
+            signal_buy, grid_buy = cek_signal_buy(price)
+            signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
+            if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(order_data['price']), order_data, is_top)
+            if signal_buy: place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
+            gc.collect(); NOTIF_FLAGS["error"]=False; await asyncio.sleep(LOOP_SEC)
+        except Exception as e:
+            if not NOTIF_FLAGS["error"]:
+                send_telegram(f"❌ <b>CRITICAL</b>\n<code>{repr(e)}</code>")
+                NOTIF_FLAGS["error"]=True
+            await asyncio.sleep(15)
+
+if __name__ == "__main__":
+    asyncio.run(main())
