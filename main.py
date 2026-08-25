@@ -256,14 +256,14 @@ def cek_signal_sell(price):
             return True, price, order_data, is_top_grid
     return False, 0, None, False
 
-# ===== V11.63.25: SELL DARURAT 2 MODE ANTI CRASH =====
+# ===== V11.63.26: SELL DARURAT 3 MODE =====
 def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
     if btc < BINANCE_RULES['min_qty']: return
 
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     data_json = load_and_clear_json()
-    send_telegram(f"🔍 <b>CEK DARURAT</b>\nBTC: {btc:.8f}\nDB: {len(data_db)}\nJSON: {len(data_json)}\nHarga: {price}")
+    send_telegram(f"🔍 <b>CEK DARURAT</b>\nBTC: {btc:.8f}\nDB: {len(data_db)}\nJSON: {len(data_json)}\nHarga: {price:.2f}")
 
     # ========== MODE 2: RECOVERY DARURAT ==========
     if len(data_db) == 0 and len(data_json) == 0:
@@ -275,17 +275,16 @@ def cek_sell_instan_darurat(price):
         if isinstance(data_binance, list):
             for o in data_binance:
                 try:
-                    # FIX: CEK SEMUA KONDISI PAKAI.get() BIAR GAK KEYERROR
                     if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0:
                         harga_beli_asli = float(o['fills'][0]['price'])
                         qty_asli = float(o['executedQty'])
                         break
                 except: continue
 
-        if harga_beli_asli > 0:
+        if harga_beli_asli > 0: # MODE 2A: KETEMU RIWAYAT BELI
             insert_res = sb_insert({"price":harga_beli_asli, "qty":qty_asli, "side":"BUY", "status":"OPEN", "binance_order_id": "RECOVERY_"+str(int(time.time())), "fee": 0})
             if len(insert_res) > 0:
-                send_telegram(f"✅ MODE 2 BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal")
+                send_telegram(f"✅ MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal")
                 return
             else:
                 if price > harga_beli_asli: # WAJIB PROFIT
@@ -293,9 +292,17 @@ def cek_sell_instan_darurat(price):
                     res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
                     if 'orderId' in res:
                         profit = (price - harga_beli_asli) * qty_asli
-                        send_telegram(f"🚨 MODE 2 SELL DARURAT PROFIT\nJual {qty} @ {price:.2f}\nProfit: {profit:.4f} USDT")
+                        send_telegram(f"🚨 MODE 2A SELL PROFIT\nJual {qty} @ {price:.2f}\nProfit: {profit:.4f} USDT")
                 else:
-                    send_telegram(f"🛑 MODE 2 DITAHAN: Harga {price:.2f} < Beli {harga_beli_asli:.2f}")
+                    send_telegram(f"🛑 MODE 2A DITAHAN: Harga {price:.2f} < Beli {harga_beli_asli:.2f}")
+
+        else: # MODE 2B: GAK KETEMU RIWAYAT = DEPOSIT
+            send_telegram("⚠️ MODE 2B: GAK NEMU RIWAYAT BELI. ANGGAP INI HASIL DEPOSIT/TRANSFER")
+            qty = format_qty(btc)
+            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+            if 'orderId' in res:
+                usdt_dapat = price * float(qty)
+                send_telegram(f"✅ MODE 2B SELL BEP\nJual {qty} @ {price:.2f}\nDapat USDT: {usdt_dapat:.2f}\nCoin deposit langsung diuangkan")
 
     # ========== MODE 1: PROFIT DARURAT ==========
     elif len(data_db) > 0:
@@ -333,7 +340,6 @@ def recovery_sync():
     for o in data_binance:
         order_id = str(o['orderId'])
         ada_di_db = order_id in db_dict
-        # FIX: CEK 'fills' DULU SEBELUM AMBIL
         if o['side'] == 'BUY' and o['status'] == 'FILLED' and o.get('fills') and len(o['fills']) > 0:
             harga = float(o['fills'][0]['price'])
             qty = float(o['executedQty'])
@@ -499,7 +505,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.25 ANTI CRASH</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.26 DARURAT 3 MODE</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
