@@ -27,7 +27,7 @@ SYMBOL = "BTCUSDT"
 LOOP_SEC = 3
 BUFFER_USDT = 0.5
 TABEL = "orders"
-TARGET_USDT_PER_BUY = 5
+TARGET_USDT_PER_BUY = 5 # INI UDAH GA KEPAKE TAPI BIARIN
 RECOVERY_INTERVAL = 3600
 RE_ENTRY_MODE = True
 REENTRY_COOLDOWN = 60 # FIX 2: COOLDOWN 60 DETIK SAJA
@@ -162,20 +162,30 @@ def format_qty(qty):
     if qty_floored < min_qty: qty_floored = min_qty
     return f"{qty_floored:.8f}"
 
-def hitung_qty_aman(harga, target_usdt=TARGET_USDT_PER_BUY):
-    min_notional = BINANCE_RULES['min_notional']
-    min_qty = BINANCE_RULES['min_qty']
-    qty = target_usdt / harga
-    if qty * harga < min_notional: qty = min_notional / harga
-    if qty < min_qty: qty = min_qty
-    qty = format_qty(qty)
-    if float(qty) * harga < min_notional: qty = format_qty((min_notional / harga) + min_qty)
-    if float(qty) < min_qty: qty = format_qty(min_qty)
-    return qty
+# ====== EDIT 1: GANTI FUNGSI INI ======
+def hitung_qty_aman(harga):
+    min_notional = BINANCE_RULES['min_notional'] # 5
+    min_qty = BINANCE_RULES['min_qty'] # 0.00001
 
+    # Poin 1: Qty minimal dari Binance
+    qty_dari_qty = min_qty
+
+    # Poin 2: Qty minimal biar tembus 5 USDT
+    qty_dari_usdt = min_notional / harga
+
+    # Ambil yg PALING GEDE biar 2 syarat kepenuhi
+    qty = max(qty_dari_qty, qty_dari_usdt)
+
+    qty = format_qty(qty)
+    return qty
+# ======================================
+
+# ====== EDIT 2: GANTI FUNGSI INI ======
 def hitung_butuh_modal(price, qty):
     modal = price * float(qty)
-    return modal * 1.002 + BUFFER_USDT
+    fee_2_arah = modal * 0.002 # fee buy + sell 0.1% x 2
+    return modal + fee_2_arah + BUFFER_USDT
+# ======================================
 
 def send_telegram(msg):
     try:
@@ -421,7 +431,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.20 PRO</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.21 IRIT</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
@@ -435,6 +445,7 @@ async def main():
                 if price_sekarang!= 0:
                     _, btc_cek = get_all_balance()
                     if btc_cek < 0.00001:
+                        # ====== EDIT 3: HAPUS ARGUMEN KEDUA ======
                         qty_market = hitung_qty_aman(price_sekarang)
                         usdt_cek, _ = get_all_balance()
                         butuh = hitung_butuh_modal(price_sekarang, qty_market)
@@ -451,6 +462,7 @@ async def main():
             signal_buy, grid_buy = cek_signal_buy(price)
             signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
             if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(order_data['price']), order_data, is_top)
+            # ====== EDIT 3: HAPUS ARGUMEN KEDUA ======
             if signal_buy: place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
             gc.collect(); NOTIF_FLAGS["error"]=False; await asyncio.sleep(LOOP_SEC)
         except Exception as e:
