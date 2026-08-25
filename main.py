@@ -256,7 +256,7 @@ def cek_signal_sell(price):
             return True, price, order_data, is_top_grid
     return False, 0, None, False
 
-# ===== V11.63.27: FIX NOTIONAL ERROR =====
+# ===== V11.63.28: LOG DETAIL + ANTI ROUNDING =====
 def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
     if btc < BINANCE_RULES['min_qty']: return
@@ -289,8 +289,9 @@ def cek_sell_instan_darurat(price):
             else:
                 qty = format_qty(btc)
                 nilai_jual = price * float(qty)
+                send_telegram(f"📊 MODE 2A CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Min=5.00")
                 if nilai_jual < BINANCE_RULES['min_notional']:
-                    send_telegram(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Min {BINANCE_RULES['min_notional']} USDT")
+                    send_telegram(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Min 5 USDT")
                 elif price > harga_beli_asli: # WAJIB PROFIT
                     res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
                     if 'orderId' in res:
@@ -300,16 +301,19 @@ def cek_sell_instan_darurat(price):
         else: # MODE 2B: GAK KETEMU RIWAYAT = DEPOSIT
             send_telegram("⚠️ MODE 2B: GAK NEMU RIWAYAT BELI. ANGGAP INI HASIL DEPOSIT/TRANSFER")
             qty = format_qty(btc)
-            nilai_jual = price * float(qty) # FIX: CEK DULU
+            nilai_jual = price * float(qty)
+            send_telegram(f"📊 MODE 2B CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Min=5.00") # LOG BARU
 
             if nilai_jual < BINANCE_RULES['min_notional']:
                 harga_butuh = BINANCE_RULES['min_notional'] / float(qty)
-                send_telegram(f"🛑 MODE 2B DITAHAN: Nilai {nilai_jual:.2f} < Min {BINANCE_RULES['min_notional']} USDT\nNunggu harga >= {harga_butuh:.0f}")
+                send_telegram(f"🛑 MODE 2B DITAHAN: Nilai {nilai_jual:.2f} < Min 5 USDT\nNunggu harga >= {harga_butuh:.0f}")
             else:
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
                 if 'orderId' in res:
-                    usdt_dapat = price * float(qty)
+                    usdt_dapat = float(res['cummulativeQuoteQty']) # ambil asli dari binance
                     send_telegram(f"✅ MODE 2B SELL BEP\nJual {qty} @ {price:.2f}\nDapat USDT: {usdt_dapat:.2f}")
+                else:
+                    send_telegram(f"❌ MODE 2B GAGAL: {res}")
 
     # ========== MODE 1: PROFIT DARURAT ==========
     elif len(data_db) > 0:
@@ -318,9 +322,10 @@ def cek_sell_instan_darurat(price):
 
         if harga_buy_pertama > 0 and price > harga_buy_pertama:
             qty = format_qty(btc)
-            nilai_jual = price * float(qty) # FIX: CEK DULU
+            nilai_jual = price * float(qty)
+            send_telegram(f"📊 MODE 1 CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Min=5.00")
             if nilai_jual < BINANCE_RULES['min_notional']:
-                send_telegram(f"🛑 MODE 1 DITAHAN: Nilai {nilai_jual:.2f} < Min {BINANCE_RULES['min_notional']} USDT")
+                send_telegram(f"🛑 MODE 1 DITAHAN: Nilai {nilai_jual:.2f} < Min 5 USDT")
             else:
                 send_telegram(f"🚨 MODE 1: HARGA DIATAS BUY PERTAMA {harga_buy_pertama:.2f}. EKSEKUSI SELL DARURAT PROFIT")
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
@@ -516,7 +521,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.27 FIX NOTIONAL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.28 LOG DETAIL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
