@@ -1,4 +1,4 @@
-import asyncio
+   import asyncio
 import os
 import time
 import requests
@@ -155,6 +155,18 @@ def get_binance_rules(symbol):
     except Exception as e:
         send_telegram(f"❌ GAGAL AMBIL RULE BINANCE: {repr(e)}")
 
+# ===== TAMBAH INI: AMBIL FEE ASLI BINANCE =====
+def get_binance_fee():
+    try:
+        data = signed_request("GET", "/api/v3/account")
+        if 'takerCommission' in data:
+            fee = float(data['takerCommission']) / 10000 # 100 = 0.1%
+            return fee
+        return 0.001
+    except:
+        return 0.001
+# ==============================================
+
 def format_qty(qty):
     step = BINANCE_RULES['step_size']
     min_qty = BINANCE_RULES['min_qty']
@@ -180,12 +192,15 @@ def hitung_qty_aman(harga):
     return qty
 # ======================================
 
-# ====== EDIT 2: GANTI FUNGSI INI ======
+# ====== EDIT 2: GANTI FUNGSI INI PAKE FEE ASLI ======
 def hitung_butuh_modal(price, qty):
+    fee = get_binance_fee() # Ambil fee asli dari akun kamu
     modal = price * float(qty)
-    fee_2_arah = modal * 0.002 # fee buy + sell 0.1% x 2
-    return modal + fee_2_arah + BUFFER_USDT
-# ======================================
+    fee_buy = modal * fee
+    fee_sell = modal * fee
+    total_fee = fee_buy + fee_sell
+    return modal + total_fee + BUFFER_USDT
+# ====================================================
 
 def send_telegram(msg):
     try:
@@ -431,7 +446,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.21 IRIT</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.22 FINAL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
