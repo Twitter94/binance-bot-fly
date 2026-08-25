@@ -169,14 +169,24 @@ def format_qty(qty):
     if qty_floored < min_qty: qty_floored = min_qty
     return f"{qty_floored:.8f}"
 
+# ===== V11.63.30 FIX: PAKSA TEMBUS 5 USDT UNTUK BUY =====
 def hitung_qty_aman(harga):
     min_notional = BINANCE_RULES['min_notional']
     min_qty = BINANCE_RULES['min_qty']
+    step = BINANCE_RULES['step_size']
+
     qty_dari_qty = min_qty
     qty_dari_usdt = min_notional / harga
     qty = max(qty_dari_qty, qty_dari_usdt)
-    qty = format_qty(qty)
-    return qty
+
+    # FIX: CEK LAGI SETELAH FORMAT, KALAU KURANG DARI 5 USDT TAMBAH 1 STEP
+    qty_formatted = float(format_qty(qty))
+    nilai = harga * qty_formatted
+
+    if nilai < min_notional:
+        qty_formatted += step
+
+    return format_qty(qty_formatted)
 
 def hitung_butuh_modal(price, qty):
     fee = get_binance_fee()
@@ -256,7 +266,7 @@ def cek_signal_sell(price):
             return True, price, order_data, is_top_grid
     return False, 0, None, False
 
-# ===== V11.63.29 FINAL: PAKSA TEMBUS MIN_NOTIONAL =====
+# ===== V11.63.30 FINAL: PAKSA TEMBUS MIN_NOTIONAL =====
 def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
     if btc < BINANCE_RULES['min_qty']: return
@@ -533,7 +543,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.29 FINAL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    send_telegram(f"6. BOT SIAP\n🤖 <b>Bot V11.63.30 FINAL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3)
     send_telegram("7. MASUK LOOP UTAMA")
     while True:
