@@ -282,33 +282,71 @@ def cek_sell_instan_darurat(price):
             if 'orderId' in res:
                 send_telegram(f"⚠️ <b>SELL DARURAT</b>\n{qty} BTC @ {price:.2f}\nSaldo USDT: {usdt:.2f}")
 
+# ===== RECOVERY 3 SUMBER: BINANCE + DB + JSON =====
 def recovery_sync():
-    send_telegram("🔄 Mulai Recovery Sync...")
-    data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 100})
-    if not isinstance(data_binance, list):
-        send_telegram("⚠️ Recovery Gagal: Data Binance kosong")
-        return
+    global PERLU_REENTRY
+    send_telegram("🔄 <b>FORCE RECOVERY 3 SUMBER</b>\nBinance + DB + JSON")
     count = 0
+
+    # 1. AMBIL SEMUA DATA DARI 3 SUMBER
+    data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
+    data_db = sb_select(f"status=eq.OPEN")
+    data_json = load_and_clear_json() # BACA JSON LALU HAPUS FILE NYA
+
+    if not isinstance(data_binance, list): data_binance = []
+
+    # 2. MASUKIN DATA JSON KE DB DULU
+    if len(data_json) > 0:
+        send_telegram(f"🔄 Menemukan {len(data_json)} order di JSON. Memasukkan ke DB...")
+        for p in data_json:
+            sb_insert(p)
+        data_db = sb_select(f"status=eq.OPEN") # REFRESH DB
+
+    # 3. BIKIN DICTIONARY BIAR CEPAT CEK
+    db_dict = {str(d['binance_order_id']): d for d in data_db if 'binance_order_id' in d}
+
+    # 4. LOOP SEMUA ORDER DI BINANCE
     for o in data_binance:
         order_id = str(o['orderId'])
-        ada_di_db = sb_select(f"binance_order_id=eq.{order_id}")
+        ada_di_db = order_id in db_dict
+
+        # KASUS A: BUY FILLED DI BINANCE TAPI GAK ADA DI DB = NYANGKUT
         if o['side'] == 'BUY' and o['status'] == 'FILLED':
             if 'fills' not in o or len(o['fills']) == 0: continue
-            if len(ada_di_db) == 0:
-                harga = float(o['fills'][0]['price'])
-                qty = float(o['executedQty'])
-                fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']]) # TAMBAH INI: AMBIL FEE BUY
-                insert_res = sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy}) # TAMBAH FEE
+            harga = float(o['fills'][0]['price'])
+            qty = float(o['executedQty'])
+            fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+
+            if not ada_di_db:
+                insert_res = sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy})
                 if len(insert_res) > 0:
                     count += 1
-                    send_telegram(f"✅ <b>RECOVERY BUY</b>\nOrderID: {order_id}\nHarga: {harga:.2f}\nFee: {fee_buy:.4f}")
+                    send_telegram(f"✅ <b>RECOVERY BUY NYANGKUT</b>\nOrderID: {order_id}\nHarga: {harga:.2f}\nQty: {qty}")
+
+        # KASUS B: SELL FILLED DI BINANCE
         if o['side'] == 'SELL' and o['status'] == 'FILLED':
-            if len(ada_di_db) > 0:
-                sb_delete(ada_di_db[0]['id'])
+            if ada_di_db: # ADA DI BINANCE DAN ADA DI DB = HAPUS DB
+                sb_delete(db_dict[order_id]['id'])
                 count += 1
                 send_telegram(f"✅ <b>RECOVERY SELL</b>\nOrderID: {order_id}\nHapus dari DB")
+
+    # 5. KASUS C: ADA DI DB TAPI GAK ADA DI BINANCE = ORDER GAGAL
+    for order_id, d in db_dict.items():
+        ketemu = False
+        for o in data_binance:
+            if str(o['orderId']) == order_id:
+                ketemu = True
+                break
+        if not ketemu:
+            sb_delete(d['id'])
+            count += 1
+            send_telegram(f"⚠️ <b>RECOVERY HAPUS ORDER GAGAL</b>\nOrderID: {order_id}\nGak ada di Binance")
+
     if count == 0:
-        send_telegram("✅ Recovery Selesai: Tidak ada order baru")
+        send_telegram("✅ Recovery Selesai: DB sudah sinkron 100%")
+    else:
+        send_telegram(f"✅ Recovery Selesai: {count} data diperbaiki")
+# ====================================================
 
 def cek_order_binance_sudah_ada(price_target):
     data = signed_request("GET", "/api/v3/openOrders", {"symbol":SYMBOL})
