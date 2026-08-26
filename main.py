@@ -165,6 +165,32 @@ def sb_delete(order_id):
     try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=5)
     except: pass
 
+# TAMBAH MULAI DARI SINI
+# FITUR BARU 1: SYNC DIAM2 1 JAM SEKALI
+def sync_3_sumber():
+    data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
+    data_db = sb_select(f"status=eq.OPEN")
+    if not isinstance(data_binance, list): return
+    db_dict = {str(d['binance_order_id']): d for d in data_db if 'binance_order_id' in d}
+    count = 0
+    for o in data_binance:
+        order_id = str(o['orderId']); ada_di_db = order_id in db_dict
+        if o['side'] == 'BUY' and o['status'] == 'FILLED' and o.get('fills'):
+            harga = float(o['fills'][0]['price']); qty = float(o['executedQty']); fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+            if not ada_di_db: sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(time.time())}); count += 1
+        if o['side'] == 'SELL' and o['status'] == 'FILLED' and ada_di_db: sb_delete(db_dict[order_id]['id']); count += 1
+    for order_id, d in db_dict.items():
+        if not any(str(o['orderId']) == order_id for o in data_binance): sb_delete(d['id']); count += 1
+    if count > 0: log_only(f"🔄 Sync: {count} data diperbaiki")
+
+# FITUR BARU 2: BERSIH SAMPAH 1 JAM SEKALI
+def bersihin_sampah():
+    tujuh_hari_lalu = int(time.time()) - (7 * 24 * 3600)
+    try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?status=neq.OPEN&time=lt.{tujuh_hari_lalu}", headers=SB_HEADERS, timeout=5)
+    except: pass
+    gc.collect()
+# SAMPAI SINI
+
 def signed_request(method, endpoint, params=None):
     if params is None: params = {}
     try:
@@ -387,6 +413,10 @@ def recovery_sync():
         if not ketemu: sb_delete(d['id']); count += 1
     notif_penting(f"✅ Recovery Selesai: {count} data diperbaiki" if count > 0 else "✅ Recovery Selesai: DB sudah sinkron 100%")
     cek_sell_instan_darurat(get_price())
+    
+    # TAMBAH 2 BARIS INI AJA
+    sync_3_sumber()
+    bersihin_sampah()
 
 def cek_order_binance_sudah_ada(price_target):
     data = signed_request("GET", "/api/v3/openOrders", {"symbol":SYMBOL})
