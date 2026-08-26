@@ -84,36 +84,12 @@ def kirim_keyboard():
 
 def kirim_status_lengkap():
     usdt, btc = get_all_balance(); price = get_price(); jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
-    
-    # 1. Status Jalan/Pause
-    status_icon = "🔴 PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "🟢 JALAN"
-    
-    # 2. Mode Silent/Normal
-    mode_txt = "SILENT" if NOTIF_MODE=="SILENT" else "NORMAL"
-    
-    # 3. Hitung Modal Butuh buat 1 grid berikutnya
-    qty_next = hitung_qty_aman(price)
-    modal_butuh = hitung_butuh_modal(price, qty_next)
-    
-    # 4. Posisi per grid
+    mode = "🔇 SILENT" if NOTIF_MODE == "SILENT" else "🔊 NORMAL"
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc")
-    posisi_txt = ""
-    if len(data_open) > 0:
-        for i, x in enumerate(data_open, 1):
-            buy_price = x["price"]
-            tp_price = buy_price + jarak
-            posisi_txt += f"{i}. BUY ${buy_price:.2f} -> TP ${tp_price:.2f}\n"
-    else:
-        posisi_txt = "Belum ada posisi"
-    
-    msg = f"""📊 <b>STATUS v11.63.38</b>
-{status_icon} | <b>Mode:</b> {mode_txt}
-<b>Harga:</b> ${price:.2f} | <b>Grid:</b> ${jarak:.2f}
-<b>Saldo:</b> ${usdt:.2f} | <b>Modal Butuh:</b> ${modal_butuh:.2f}
-<b>Posisi:</b> {len(data_open)} Grid | <b>BTC:</b> {btc:.8f}
-
-📍 <b>POSISI</b>
-{posisi_txt}"""
+    posisi = "TIDAK ADA POSISI"
+    if len(data_open) > 0: posisi = f"BUY: {data_open[0]['price']:.2f} s/d {data_open[-1]['price']:.2f} | Total: {len(data_open)} grid"
+    status_bot = "PAUSE - MENUNGGU SALDO" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
+    msg = f"📊 <b>STATUS BOT V11.63.39</b>\n<b>Mode:</b> {mode}\n<b>Status:</b> {status_bot}\n<b>Harga:</b> {price:.2f}\n<b>ATR Jarak:</b> {jarak:.2f}\n<b>Saldo USDT:</b> {usdt:.2f}\n<b>Saldo BTC:</b> {btc:.8f}\n<b>Posisi:</b> {posisi}\n<b>Profit Hari Ini:</b> {DAILY_STATS['profit_usdt']:.4f} USDT"
     notif_penting(msg)
 
 def cek_command_telegram():
@@ -341,7 +317,7 @@ def cek_sell_instan_darurat(price):
     data_json = load_and_clear_json()
     log_only(f"🔍 CEK DARURAT\nBTC: {btc:.8f}\nDB: {len(data_db)}\nJSON: {len(data_json)}\nHarga: {price:.2f}")
     if len(data_db) == 0 and len(data_json) == 0:
-        log_only("⚠️ MODE 2: DETEKSI COIN TANPA CATATAN. MENCARI HARGA BELI DI BINANCE...")
+        log_only(f"⚠️ MODE 2: DETEKSI COIN TANPA CATATAN. MENCARI HARGA BELI DI BINANCE...")
         data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
         harga_beli_asli = 0; qty_asli = 0
         if isinstance(data_binance, list):
@@ -385,7 +361,12 @@ def cek_sell_instan_darurat(price):
 
 def recovery_sync():
     global PERLU_REENTRY
-    notif_penting("🔄 <b>FORCE RECOVERY 3 SUMBER</b>\nBinance + DB + JSON")
+    # PATCH 1: Notif dibedain pas SILENT
+    if NOTIF_MODE == "NORMAL":
+        notif_penting("🔄 <b>FORCE RECOVERY 3 SUMBER</b>\nBinance + DB + JSON")
+    else:
+        log_only("🔄 FORCE RECOVERY 3 SUMBER - SILENT MODE")
+
     count = 0
     data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
     data_db = sb_select(f"status=eq.OPEN")
@@ -409,7 +390,13 @@ def recovery_sync():
         for o in data_binance:
             if str(o['orderId']) == order_id: ketemu = True; break
         if not ketemu: sb_delete(d['id']); count += 1
-    notif_penting(f"✅ Recovery Selesai: {count} data diperbaiki" if count > 0 else "✅ Recovery Selesai: DB sudah sinkron 100%")
+
+    # PATCH 1: Notif selesai dibedain pas SILENT
+    if NOTIF_MODE == "NORMAL":
+        notif_penting(f"✅ Recovery Selesai: {count} data diperbaiki" if count > 0 else "✅ Recovery Selesai: DB sudah sinkron 100%")
+    else:
+        log_only(f"✅ Recovery Selesai: {count} data diperbaiki" if count > 0 else "✅ Recovery Selesai: DB sudah sinkron 100%")
+
     cek_sell_instan_darurat(get_price())
 
 def cek_order_binance_sudah_ada(price_target):
@@ -447,9 +434,16 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         except Exception as e: notif_penting(f"❌ ERROR BUY: {repr(e)}")
         finally: BUYING_LOCK.discard(price_grid)
     if side=="SELL":
+        # PATCH 2: Qty ambil dari DB
+        qty_db = format_qty(float(order_data['qty']))
+
         _, btc = get_all_balance()
-        if btc < BINANCE_RULES['min_qty']: notif_penting(f"❌ GAGAL SELL: BTC {btc} < {BINANCE_RULES['min_qty']}"); return
-        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+        if btc < float(qty_db):
+            notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty DB {qty_db}")
+            sb_delete(order_data['id'])
+            return
+
+        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db})
         if 'orderId' in res and order_data and 'fills' in res:
             harga_beli = order_data['price']; fee_buy_db = order_data.get('fee', 0); qty_fill = float(res['executedQty']); fee_sell = sum([float(f['commission']) * float(f['price']) for f in res['fills']])
             profit = (price_grid * qty_fill) - (harga_beli * qty_fill) - fee_buy_db - fee_sell
@@ -479,7 +473,7 @@ async def main():
         await asyncio.sleep(2)
     notif_penting("5. RECOVERY"); recovery_sync(); LAST_RECOVERY = time.time()
     harga_sekarang = get_price(); saldo_usdt, saldo_btc = get_all_balance()
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V11.63.38 TOMBOL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V11.63.39 TOMBOL</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     kirim_keyboard()
     cek_sell_instan_darurat(harga_sekarang); await asyncio.sleep(3); notif_penting("7. MASUK LOOP UTAMA")
     while True:
@@ -496,7 +490,8 @@ async def main():
             price = get_price()
             if price == 0: await asyncio.sleep(10); continue
             signal_buy, grid_buy = cek_signal_buy(price); signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
-            if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(order_data['price']), order_data, is_top)
+            # PATCH 3: Kirim qty dari DB pas SELL
+            if signal_sell: place_order_real("SELL", grid_sell, format_qty(float(order_data['qty'])), order_data, is_top)
             if signal_buy: place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
             if NOTIF_FLAGS["error"] == True: notif_penting(f"✅ <b>BOT SUDAH NORMAL KEMBALI</b>\n<b>Error terakhir:</b> <code>{NOTIF_FLAGS['critical_msg']}</code>\n<b>Waktu Pulih:</b> {datetime.now(WIB).strftime('%H:%M:%S')}"); NOTIF_FLAGS["error"]=False; NOTIF_FLAGS["critical_msg"]=""
             gc.collect(); await asyncio.sleep(LOOP_SEC)
