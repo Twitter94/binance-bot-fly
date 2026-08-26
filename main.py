@@ -93,7 +93,7 @@ def kirim_status_lengkap():
         harga_buy = data_open[0]['price']
         tp = harga_buy + jarak
         posisi_txt = f"1 Grid"
-        tp_txt = f"\n📌 POSISI\n1. BUY ${harga_buy:.2f} -> TP ${tp:.2f}"
+        tp_txt = f"\n\n📌 POSISI\n1. BUY ${harga_buy:.2f} -> TP ${tp:.2f}"
 
     butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
     status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
