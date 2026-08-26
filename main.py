@@ -86,18 +86,20 @@ def kirim_status_lengkap():
     usdt, btc = get_all_balance(); price = get_price(); jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
     mode = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc")
+
     posisi_txt = "TIDAK ADA POSISI"
     tp_txt = ""
     if len(data_open) > 0:
         harga_buy = data_open[0]['price']
         tp = harga_buy + jarak
         posisi_txt = f"1 Grid"
-        tp_txt = f"\n📍 POSISI\n1. BUY ${harga_buy:.2f} -> TP ${tp:.2f}"
+        tp_txt = f"\n📌 POSISI\n1. BUY ${harga_buy:.2f} -> TP ${tp:.2f}"
 
     butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
     status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
+    emoji = "🔴" if status_txt=="PAUSE" else "🟢"
 
-    msg = f"📊 STATUS v11.63.39\n{'🔴' if status_txt=='PAUSE' else '🟢'} {status_txt} | Mode: {mode}\nHarga: ${price:.2f} | Grid: ${jarak:.2f}\nSaldo: ${usdt:.2f} | Modal Butuh: ${butuh:.2f}\nPosisi: {posisi_txt} | BTC: {btc:.8f}{tp_txt}"
+    msg = f"📊 SAFANA 09-04-2025\n{emoji} {status_txt} | Mode: {mode}\nHarga: ${price:.2f} | Grid: ${jarak:.2f}\nSaldo: ${usdt:.2f} | Modal Butuh: ${butuh:.2f}\nPosisi: {posisi_txt} | BTC: {btc:.8f}{tp_txt}"
     notif_penting(msg)
 
 def cek_command_telegram():
