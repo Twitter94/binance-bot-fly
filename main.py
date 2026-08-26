@@ -83,40 +83,33 @@ def kirim_keyboard():
     except: pass
 
 def kirim_status_lengkap():
-    usdt, btc = get_all_balance()
-    price = get_price()
-    data_open = sb_select()
-    data_open = [x for x in data_open if x["symbol"]==SYMBOL]
+    usdt, btc = get_all_balance(); price = get_price(); jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
     
     # 1. Status Jalan/Pause
-    if NOTIF_FLAGS["saldo_kurang"]:
-        status_icon = "🔴 PAUSE"
-        status_txt = "MENUNGGU SALDO"
-    else:
-        status_icon = "🟢 JALAN"
-        status_txt = "GRID AKTIF"
+    status_icon = "🔴 PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "🟢 JALAN"
     
     # 2. Mode Silent/Normal
     mode_txt = "SILENT" if NOTIF_MODE=="SILENT" else "NORMAL"
     
-    # 3. Hitung Modal Butuh & Grid
-    butuh = (float(last_rules['minNotional']) + 1) * (len(data_open)+1) if last_rules else 0
-    grid_jarak = get_atr()
+    # 3. Hitung Modal Butuh buat 1 grid berikutnya
+    qty_next = hitung_qty_aman(price)
+    modal_butuh = hitung_butuh_modal(price, qty_next)
     
     # 4. Posisi per grid
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc")
     posisi_txt = ""
     if len(data_open) > 0:
         for i, x in enumerate(data_open, 1):
             buy_price = x["price"]
-            tp_price = buy_price + grid_jarak
+            tp_price = buy_price + jarak
             posisi_txt += f"{i}. BUY ${buy_price:.2f} -> TP ${tp_price:.2f}\n"
     else:
         posisi_txt = "Belum ada posisi"
     
     msg = f"""📊 <b>STATUS v11.63.38</b>
 {status_icon} | <b>Mode:</b> {mode_txt}
-<b>Harga:</b> ${price:.2f} | <b>Grid:</b> ${grid_jarak:.2f}
-<b>Saldo:</b> ${usdt:.2f} | <b>Modal Butuh:</b> ${butuh:.2f}
+<b>Harga:</b> ${price:.2f} | <b>Grid:</b> ${jarak:.2f}
+<b>Saldo:</b> ${usdt:.2f} | <b>Modal Butuh:</b> ${modal_butuh:.2f}
 <b>Posisi:</b> {len(data_open)} Grid | <b>BTC:</b> {btc:.8f}
 
 📍 <b>POSISI</b>
