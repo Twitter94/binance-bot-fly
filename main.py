@@ -84,12 +84,20 @@ def kirim_keyboard():
 
 def kirim_status_lengkap():
     usdt, btc = get_all_balance(); price = get_price(); jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
-    mode = "🔇 SILENT" if NOTIF_MODE == "SILENT" else "🔊 NORMAL"
+    mode = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc")
-    posisi = "TIDAK ADA POSISI"
-    if len(data_open) > 0: posisi = f"BUY: {data_open[0]['price']:.2f} s/d {data_open[-1]['price']:.2f} | Total: {len(data_open)} grid"
-    status_bot = "PAUSE - MENUNGGU SALDO" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
-    msg = f"📊 <b>STATUS BOT V11.63.39</b>\n<b>Mode:</b> {mode}\n<b>Status:</b> {status_bot}\n<b>Harga:</b> {price:.2f}\n<b>ATR Jarak:</b> {jarak:.2f}\n<b>Saldo USDT:</b> {usdt:.2f}\n<b>Saldo BTC:</b> {btc:.8f}\n<b>Posisi:</b> {posisi}\n<b>Profit Hari Ini:</b> {DAILY_STATS['profit_usdt']:.4f} USDT"
+    posisi_txt = "TIDAK ADA POSISI"
+    tp_txt = ""
+    if len(data_open) > 0:
+        harga_buy = data_open[0]['price']
+        tp = harga_buy + jarak
+        posisi_txt = f"1 Grid"
+        tp_txt = f"\n📍 POSISI\n1. BUY ${harga_buy:.2f} -> TP ${tp:.2f}"
+
+    butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
+    status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
+
+    msg = f"📊 STATUS v11.63.39\n{'🔴' if status_txt=='PAUSE' else '🟢'} {status_txt} | Mode: {mode}\nHarga: ${price:.2f} | Grid: ${jarak:.2f}\nSaldo: ${usdt:.2f} | Modal Butuh: ${butuh:.2f}\nPosisi: {posisi_txt} | BTC: {btc:.8f}{tp_txt}"
     notif_penting(msg)
 
 def cek_command_telegram():
