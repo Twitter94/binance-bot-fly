@@ -84,12 +84,40 @@ def kirim_keyboard():
 
 def kirim_status_lengkap():
     usdt, btc = get_all_balance(); price = get_price(); jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
-    mode = "🔇 SILENT" if NOTIF_MODE == "SILENT" else "🔊 NORMAL"
+    fee = get_binance_fee() * 100
+    
+    # 1. Status Jalan/Pause
+    if NOTIF_FLAGS["saldo_kurang"]:
+        status_icon = "🔴 PAUSE"
+    else:
+        status_icon = "🟢 JALAN"
+    
+    # 2. Mode Silent/Normal
+    mode_txt = "SILENT" if NOTIF_MODE=="SILENT" else "NORMAL"
+    
+    # 3. Hitung Modal Butuh buat 1 grid berikutnya
+    qty_next = hitung_qty_aman(price)
+    modal_butuh = hitung_butuh_modal(price, qty_next)
+    
+    # 4. Posisi per grid
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc")
-    posisi = "TIDAK ADA POSISI"
-    if len(data_open) > 0: posisi = f"BUY: {data_open[0]['price']:.2f} s/d {data_open[-1]['price']:.2f} | Total: {len(data_open)} grid"
-    status_bot = "PAUSE - MENUNGGU SALDO" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
-    msg = f"📊 <b>STATUS BOT V11.63.38</b>\n<b>Mode:</b> {mode}\n<b>Status:</b> {status_bot}\n<b>Harga:</b> {price:.2f}\n<b>ATR Jarak:</b> {jarak:.2f}\n<b>Saldo USDT:</b> {usdt:.2f}\n<b>Saldo BTC:</b> {btc:.8f}\n<b>Posisi:</b> {posisi}\n<b>Profit Hari Ini:</b> {DAILY_STATS['profit_usdt']:.4f} USDT"
+    posisi_txt = ""
+    if len(data_open) > 0:
+        for i, x in enumerate(data_open, 1):
+            buy_price = x["price"]
+            tp_price = buy_price + jarak
+            posisi_txt += f"{i}. BUY ${buy_price:.2f} -> TP ${tp_price:.2f}\n"
+    else:
+        posisi_txt = "Belum ada posisi"
+    
+    msg = f"""📊 <b>STATUS v11.63.38</b>
+{status_icon} | <b>Mode:</b> {mode_txt}
+<b>Harga:</b> ${price:.2f} | <b>Grid:</b> ${jarak:.2f}
+<b>Saldo:</b> ${usdt:.2f} | <b>Modal Butuh:</b> ${modal_butuh:.2f}
+<b>Posisi:</b> {len(data_open)} Grid | <b>Fee:</b> {fee:.3f}% | <b>BTC:</b> {btc:.8f}
+
+📍 <b>POSISI</b>
+{posisi_txt}"""
     notif_penting(msg)
 
 def cek_command_telegram():
