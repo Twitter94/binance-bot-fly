@@ -376,11 +376,41 @@ def cek_signal_sell(price):
 
 def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
-    if btc < BINANCE_RULES['min_qty']: 
+    if btc < BINANCE_RULES['min_qty']:
         return
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     data_json = load_and_clear_json()
     log_only(f"🔍 CEK DARURAT\nBTC: {btc:.8f}\nDB: {len(data_db)}\nJSON: {len(data_json)}\nHarga: {price:.2f}")
+
+    # AMBIL TP TERAKHIR BUAT MODE 3
+    harga_buy_pertama = 0
+    harga_buy_terakhir = 0
+    tp_terakhir = 0
+    if len(data_db) > 0:
+        try:
+            harga_buy_pertama = min([d['price'] for d in data_db])
+            harga_buy_terakhir = max([d['price'] for d in data_db])
+            tp_terakhir = harga_buy_terakhir + ATR_MANAGER['jarak']
+        except:
+            pass
+
+    # MODE 3 BARU: ADA DATA TAPI HARGA UDAH KELEWAT TINGGI JAUH
+    if len(data_db) > 0 and price > tp_terakhir + (ATR_MANAGER['jarak'] * 0.5):
+        qty = format_qty(btc) # Jual semua BTC yg ada
+        nilai_jual = price * float(qty)
+        notif_penting(f"🚨 <b>MODE 3: HARGA KELEWAT TP</b>\nBUY: {harga_buy_pertama:.2f}\nTP: {tp_terakhir:.2f}\nSekarang: {price:.2f}\nJUAL LGSG: {qty} @ {price:.2f}\nDapat: {nilai_jual:.2f} USDT")
+        try:
+            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+            if 'orderId' in res:
+                for d in data_db:
+                    sb_delete(d['id']) # Hapus semua catatan biar bersih
+                profit = (price - harga_buy_pertama) * float(qty)
+                notif_penting(f"✅ MODE 3 SUKSES TP PAKSA\nProfit Kotor: {profit:.4f} USDT")
+        except Exception as e:
+            log_only(f"GAGAL MODE 3 SELL: {repr(e)}")
+        return # PENTING: stop disini biar ga lanjut ke mode 1
+
+    # MODE 2: GA ADA DATA TAPI ADA BTC
     if len(data_db) == 0 and len(data_json) == 0:
         log_only(f"⚠️ MODE 2: DETEKSI COIN TANPA CATATAN. MENCARI HARGA BELI DI BINANCE...")
         data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
@@ -393,14 +423,14 @@ def cek_sell_instan_darurat(price):
                         harga_beli_asli = float(o['fills'][0]['price'])
                         qty_asli = float(o['executedQty'])
                         break
-                except: 
+                except:
                     continue
         if harga_beli_asli > 0:
             insert_res = sb_insert({"price":harga_beli_asli, "qty":qty_asli, "side":"BUY", "status":"OPEN", "binance_order_id": "RECOVERY_"+str(int(time.time())), "fee": 0})
             if len(insert_res) > 0:
                 log_only(f"✅ MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal")
                 return
-        qty = hitung_qty_aman(price)
+        qty = format_qty(btc) # PAKAI format_qty biar ga error
         nilai_jual = price * float(qty)
         butuh_min = hitung_butuh_modal(price, qty)
         log_only(f"MODE 2A CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
@@ -414,13 +444,11 @@ def cek_sell_instan_darurat(price):
                     notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty} @ {price:.2f}\nProfit: {profit:.4f} USDT")
             except Exception as e:
                 log_only(f"GAGAL MODE 2A SELL: {repr(e)}")
+
+    # MODE 1: ADA DATA, HARGA DIATAS BUY PERTAMA
     elif len(data_db) > 0:
-        try: 
-            harga_buy_pertama = min([d['price'] for d in data_db])
-        except: 
-            harga_buy_pertama = 0
         if harga_buy_pertama > 0 and price > harga_buy_pertama:
-            qty = hitung_qty_aman(price)
+            qty = format_qty(float(data_db[0]['qty'])) # PAKAI format_qty
             nilai_jual = price * float(qty)
             butuh_min = hitung_butuh_modal(price, qty)
             log_only(f"MODE 1 CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
@@ -431,7 +459,7 @@ def cek_sell_instan_darurat(price):
                 try:
                     res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
                     if 'orderId' in res:
-                        for d in data_db: 
+                        for d in data_db:
                             sb_delete(d['id'])
                         profit = (price - harga_buy_pertama) * float(qty)
                         notif_penting(f"✅ MODE 1 SUKSES\nJual {qty} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
