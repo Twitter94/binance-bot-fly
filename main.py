@@ -195,18 +195,26 @@ def get_all_balance():
     usdt = float(next((b['free'] for b in data['balances'] if b['asset']=='USDT'), 0))
     btc = float(next((b['free'] for b in data['balances'] if b['asset']=='BTC'), 0))
     return usdt, btc
+    
 def get_binance_rules(symbol):
-    try: data = requests.get(f"{BASE_URL}/api/v3/exchangeInfo?symbol={symbol}", timeout=5).json()
-    for f in data['symbols'][0]['filters']:
-        if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
-        if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
-    except Exception as e: notif_penting(f"❌ GAGAL AMBIL RULE BINANCE: {repr(e)}")
+    global BINANCE_RULES
+    try:
+        data = requests.get(f"{BASE_URL}/api/v3/exchangeInfo?symbol={symbol}", timeout=5).json()
+        for f in data['symbols'][0]['filters']:
+            if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
+            if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
+    except Exception as e: 
+        notif_penting(f"❌ GAGAL AMBIL RULE BINANCE: {repr(e)}")
 
 def get_binance_fee():
-    try: data = signed_request("GET", "/api/v3/account")
-    if 'takerCommission' in data: fee = float(data['takerCommission']) / 10000; return fee
-    return 0.001
-    except: return 0.001
+    try: 
+        data = signed_request("GET", "/api/v3/account")
+        if 'takerCommission' in data: 
+            fee = float(data['takerCommission']) / 10000
+            return fee
+        return 0.001
+    except: 
+        return 0.001
 
 def format_qty(qty): step = BINANCE_RULES['step_size']; min_qty = BINANCE_RULES['min_qty']; qty_floored = int(qty / step) * step
 if qty_floored < min_qty: qty_floored = min_qty; return f"{qty_floored:.8f}"
