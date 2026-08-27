@@ -267,13 +267,12 @@ def get_binance_fee():
     except: 
         return 0.001
 
-def format_qty(qty): 
+def format_qty(qty):
     step = BINANCE_RULES['step_size']
-    min_qty = BINANCE_RULES['min_qty']
-    qty_floored = int(qty / step) * step
-    if qty_floored < min_qty: 
-        qty_floored = min_qty
-    return f"{qty_floored:.8f}"
+    # Bulatkan ke bawah ke kelipatan step_size
+    qty = math.floor(qty / step) * step
+    # Format 8 digit, hapus 0 di belakang
+    return f"{qty:.8f}".rstrip('0').rstrip('.')
 
 def hitung_qty_aman(harga):
     min_notional = BINANCE_RULES['min_notional'] # 5.0
@@ -396,15 +395,22 @@ def cek_sell_instan_darurat(price):
 
     # MODE 3 BARU: ADA DATA TAPI HARGA UDAH KELEWAT TINGGI JAUH
     if len(data_db) > 0 and price > tp_terakhir + (ATR_MANAGER['jarak'] * 0.5):
-        qty = format_qty(btc) # Jual semua BTC yg ada
-        nilai_jual = price * float(qty)
-        notif_penting(f"🚨 <b>MODE 3: HARGA KELEWAT TP</b>\nBUY: {harga_buy_pertama:.2f}\nTP: {tp_terakhir:.2f}\nSekarang: {price:.2f}\nJUAL LGSG: {qty} @ {price:.2f}\nDapat: {nilai_jual:.2f} USDT")
+        qty = btc # Ambil semua BTC mentah dulu
+        step = BINANCE_RULES['step_size']
+        # PAKSA NAIK SAMPAI LOLOS MIN NOTIONAL 5.01
+        while price * qty < BINANCE_RULES['min_notional'] + 0.01:
+            qty += step
+            if qty > 0.1: break # safety
+
+        qty_str = format_qty(qty) # Baru diformat
+        nilai_jual = price * float(qty_str)
+        notif_penting(f"🚨 <b>MODE 3: HARGA KELEWAT TP</b>\nBUY: {harga_buy_pertama:.2f}\nTP: {tp_terakhir:.2f}\nSekarang: {price:.2f}\nJUAL LGSG: {qty_str} @ {price:.2f}\nDapat: {nilai_jual:.2f} USDT")
         try:
-            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
             if 'orderId' in res:
                 for d in data_db:
                     sb_delete(d['id']) # Hapus semua catatan biar bersih
-                profit = (price - harga_buy_pertama) * float(qty)
+                profit = (price - harga_buy_pertama) * float(qty_str)
                 notif_penting(f"✅ MODE 3 SUKSES TP PAKSA\nProfit Kotor: {profit:.4f} USDT")
         except Exception as e:
             log_only(f"GAGAL MODE 3 SELL: {repr(e)}")
@@ -430,39 +436,39 @@ def cek_sell_instan_darurat(price):
             if len(insert_res) > 0:
                 log_only(f"✅ MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal")
                 return
-        qty = format_qty(btc) # PAKAI format_qty biar ga error
-        nilai_jual = price * float(qty)
-        butuh_min = hitung_butuh_modal(price, qty)
-        log_only(f"MODE 2A CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
+        qty_str = format_qty(btc)
+        nilai_jual = price * float(qty_str)
+        butuh_min = hitung_butuh_modal(price, qty_str)
+        log_only(f"MODE 2A CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
         if nilai_jual < butuh_min:
             log_only(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
         elif price > harga_beli_asli:
             try:
-                res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+                res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
                 if 'orderId' in res:
-                    profit = (price - harga_beli_asli) * float(qty)
-                    notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty} @ {price:.2f}\nProfit: {profit:.4f} USDT")
+                    profit = (price - harga_beli_asli) * float(qty_str)
+                    notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty_str} @ {price:.2f}\nProfit: {profit:.4f} USDT")
             except Exception as e:
                 log_only(f"GAGAL MODE 2A SELL: {repr(e)}")
 
     # MODE 1: ADA DATA, HARGA DIATAS BUY PERTAMA
     elif len(data_db) > 0:
         if harga_buy_pertama > 0 and price > harga_buy_pertama:
-            qty = format_qty(float(data_db[0]['qty'])) # PAKAI format_qty
-            nilai_jual = price * float(qty)
-            butuh_min = hitung_butuh_modal(price, qty)
-            log_only(f"MODE 1 CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
+            qty_str = format_qty(float(data_db[0]['qty']))
+            nilai_jual = price * float(qty_str)
+            butuh_min = hitung_butuh_modal(price, qty_str)
+            log_only(f"MODE 1 CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
             if nilai_jual < butuh_min:
                 log_only(f"🛑 MODE 1 DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
             else:
                 log_only(f"🚨 MODE 1: HARGA DIATAS BUY PERTAMA {harga_buy_pertama:.2f}. EKSEKUSI SELL DARURAT PROFIT")
                 try:
-                    res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+                    res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
                     if 'orderId' in res:
                         for d in data_db:
                             sb_delete(d['id'])
-                        profit = (price - harga_buy_pertama) * float(qty)
-                        notif_penting(f"✅ MODE 1 SUKSES\nJual {qty} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
+                        profit = (price - harga_buy_pertama) * float(qty_str)
+                        notif_penting(f"✅ MODE 1 SUKSES\nJual {qty_str} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
                 except Exception as e:
                     log_only(f"GAGAL MODE 1 SELL: {repr(e)}")
         else:
