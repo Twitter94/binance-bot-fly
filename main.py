@@ -284,16 +284,39 @@ def cek_sell_instan_darurat(price):
     if len(insert_res) > 0: log_only(f"✅ MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal"); return
     else: qty = hitung_qty_aman(price); nilai_jual = price * float(qty); butuh_min = hitung_butuh_modal(price, qty); log_only(f"MODE 2A CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
     if nilai_jual < butuh_min: log_only(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
-    elif price > harga_beli_asli:
-        try: res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
-        if 'orderId' in res: profit = (price - harga_beli_asli) * float(qty); notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty} @ {price:.2f}\nProfit: {profit:.4f} USDT")
-        except Exception as e: log_only(f"GAGAL MODE 2A SELL: {repr(e)}")
-    else: qty = hitung_qty_aman(price); nilai_jual = price * float(qty); butuh_min = hitung_butuh_modal(price, qty); log_only(f"MODE 2B CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
-    if nilai_jual < butuh_min: harga_butuh = butuh_min / float(qty); log_only(f"🛑 MODE 2B DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}\nNunggu harga >= {harga_butuh:.0f}"); return
-    try: res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
-    if 'orderId' in res: usdt_dapat = float(res['cummulativeQuoteQty']); notif_penting(f"✅ MODE 2B SELL BEP\nJual {qty} @ {price:.2f}\nDapat USDT: {usdt_dapat:.2f}")
-    else: notif_penting(f"❌ MODE 2B GAGAL: {res}")
-    except Exception as e: log_only(f"GAGAL MODE 2B SELL: {repr(e)}")
+        elif price > harga_beli_asli:
+        qty = hitung_qty_aman(price)
+        nilai_jual = price * float(qty)
+        butuh_min = hitung_butuh_modal(price, qty)
+        log_only(f"MODE 2A CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
+        if nilai_jual < butuh_min: 
+            log_only(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
+        else:
+            try: 
+                res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+                if 'orderId' in res: 
+                    profit = (price - harga_beli_asli) * float(qty)
+                    notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty} @ {price:.2f}\nProfit: {profit:.4f} USDT")
+            except Exception as e: 
+                log_only(f"GAGAL MODE 2A SELL: {repr(e)}")
+    else: 
+        qty = hitung_qty_aman(price)
+        nilai_jual = price * float(qty)
+        butuh_min = hitung_butuh_modal(price, qty)
+        log_only(f"MODE 2B CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
+        if nilai_jual < butuh_min: 
+            harga_butuh = butuh_min / float(qty)
+            log_only(f"🛑 MODE 2B DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}\nNunggu harga >= {harga_butuh:.0f}")
+            return
+        try: 
+            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
+            if 'orderId' in res: 
+                usdt_dapat = float(res['cummulativeQuoteQty'])
+                notif_penting(f"✅ MODE 2B SELL BEP\nJual {qty} @ {price:.2f}\nDapat USDT: {usdt_dapat:.2f}")
+            else: 
+                notif_penting(f"❌ MODE 2B GAGAL: {res}")
+        except Exception as e: 
+            log_only(f"GAGAL MODE 2B SELL: {repr(e)}")
     elif len(data_db) > 0:
         try: harga_buy_pertama = min([d['price'] for d in data_db])
         except: harga_buy_pertama = 0
