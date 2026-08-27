@@ -165,9 +165,13 @@ def cek_tabel_supabase():
 def sb_insert(data):
     try:
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
-        if r.status_code not in [200,201]: return []
+        if r.status_code not in [200,201]: 
+            notif_penting(f"❌ SB_INSERT GAGAL {r.status_code}: {r.text}")
+            return []
         return r.json()
-    except: return []
+    except Exception as e: 
+        notif_penting(f"❌ SB_INSERT CRASH: {repr(e)}")
+        return []
 
 def sb_select(filters=""):
     try:
