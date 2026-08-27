@@ -229,10 +229,19 @@ def hitung_qty_aman(harga):
 def hitung_butuh_modal(price, qty): fee = get_binance_fee(); modal = price * float(qty); fee_buy = modal * fee; fee_sell = modal * fee; total_fee = fee_buy + fee_sell; return modal + total_fee + BUFFER_USDT
 
 def get_atr(symbol, period=ATR_PERIOD, interval=ATR_TIMEFRAME):
-    try: r = requests.get(f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=10); r.raise_for_status(); data = r.json(); tr_list = []
-    for i in range(1, len(data)): high, low, prev_close = float(data[i][2]), float(data[i][3]), float(data[i-1][4]); tr = max(high-low, abs(high-prev_close), abs(low-prev_close)); tr_list.append(tr)
-    return sum(tr_list[-period:]) / period
-    except Exception as e: notif_penting(f"❌ ERROR GET ATR: {repr(e)}"); return 0
+    try:
+        r = requests.get(f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        tr_list = []
+        for i in range(1, len(data)): 
+            high, low, prev_close = float(data[i][2]), float(data[i][3]), float(data[i-1][4])
+            tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
+            tr_list.append(tr)
+        return sum(tr_list[-period:]) / period
+    except Exception as e: 
+        notif_penting(f"❌ ERROR GET ATR: {repr(e)}")
+        return 0
 
 def update_atr_manager():
     global ATR_MANAGER, DAILY_STATS, NOTIF_SENT; now_wib = datetime.now(WIB); hari_ini_wib = now_wib.strftime("%Y-%m-%d")
