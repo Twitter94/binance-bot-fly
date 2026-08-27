@@ -116,12 +116,21 @@ def load_and_clear_json():
     except: return []
 
 def cek_tabel_supabase():
-    try: r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?limit=1", headers=SB_HEADERS, timeout=5)
-    if r.status_code == 200: notif_penting("✅ Koneksi Supabase OK. Tabel `orders` ada"); pending = load_and_clear_json()
-    if len(pending) > 0: notif_penting(f"🔄 Menemukan {len(pending)} order di JSON. Mencoba insert ke DB...")
-    for p in pending: sb_insert(p)
-    else: notif_penting(f"⚠️ Supabase Error: {r.status_code}. Retry 5 detik"); time.sleep(5)
-    except Exception as e: notif_penting(f"⚠️ Gagal konek Supabase: {repr(e)}. Retry 5 detik"); time.sleep(5)
+    try:
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?limit=1", headers=SB_HEADERS, timeout=5)
+        if r.status_code == 200:
+            notif_penting("✅ Koneksi Supabase OK. Tabel `orders` ada")
+            pending = load_and_clear_json()
+            if len(pending) > 0:
+                notif_penting(f"🔄 Menemukan {len(pending)} order di JSON. Mencoba insert ke DB...")
+                for p in pending:
+                    sb_insert(p)
+        else:
+            notif_penting(f"⚠️ Supabase Error: {r.status_code}. Retry 5 detik")
+            time.sleep(5)
+    except Exception as e:
+        notif_penting(f"⚠️ Gagal konek Supabase: {repr(e)}. Retry 5 detik")
+        time.sleep(5)
 
 def sb_insert(data):
     try: r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
