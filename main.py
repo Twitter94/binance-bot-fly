@@ -276,17 +276,24 @@ def format_qty(qty):
     return f"{qty_floored:.8f}"
 
 def hitung_qty_aman(harga):
-    min_notional = BINANCE_RULES['min_notional']
+    min_notional = BINANCE_RULES['min_notional'] # 5.0
     min_qty = BINANCE_RULES['min_qty']
     step = BINANCE_RULES['step_size']
-    qty_dari_qty = min_qty
+    
     qty_dari_usdt = min_notional / harga
-    qty = max(qty_dari_qty, qty_dari_usdt)
-    qty_formatted = float(format_qty(qty))
-    nilai = harga * qty_formatted
-    if nilai < min_notional: 
-        qty_formatted += step
-    return format_qty(qty_formatted)
+    qty = max(min_qty, qty_dari_usdt)
+    
+    qty_str = format_qty(qty) # "0.00007000"
+    nilai = harga * float(qty_str)
+    
+    # Kalau masih kurang dari 5.01, tambahin 1 step biar aman
+    while nilai < min_notional + 0.01:
+        qty += step
+        qty_str = format_qty(qty)
+        nilai = harga * float(qty_str)
+        if qty > 0.1: break # safety
+        
+    return qty_str
 
 def hitung_butuh_modal(price, qty): 
     fee = get_binance_fee()
@@ -557,15 +564,25 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             BUYING_LOCK.discard(price_grid)
             
     if side=="SELL":
-        qty_db = format_qty(float(order_data['qty'])) # <--- FIX 1: PAKE format_qty biar jadi string "0.00007000"
+        qty_db = format_qty(float(order_data['qty'])) # PAKE format_qty biar jadi string "0.00007000"
+        
+        # CEK NOTIONAL DULU BIAR GA ERROR -1013
+        nilai_jual = price_grid * float(qty_db)
+        if nilai_jual < BINANCE_RULES['min_notional']:
+            notif_penting(f"❌ GAGAL SELL: Nilai {nilai_jual:.2f} < Min 5 USDT. Qty: {qty_db}")
+            return
+        
         _, btc = get_all_balance()
-        if float(btc) < float(qty_db):  # <--- FIX 2: compare float ke float
+        if float(btc) < float(qty_db): 
             notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty {qty_db}")
             return
-        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db}) # <--- FIX 3: kirim string
+            
+        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db}) # <--- CEK quantity BENER
+        
         if 'orderId' not in res: 
             log_only(f"❌ SELL GAGAL: {res}")
             return
+            
         if order_data and 'fills' in res: 
             harga_beli = order_data['price']
             fee_buy_db = order_data.get('fee', 0)
