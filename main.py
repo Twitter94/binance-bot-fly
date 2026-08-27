@@ -116,7 +116,7 @@ def cek_command_telegram():
         if text == "ganti mode":
             NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"
             txt = "🔊 MODE NORMAL AKTIF" if NOTIF_MODE == "NORMAL" else "🔇 MODE SILENT AKTIF"
-            notif_penting(txt)
+            log_only(txt)
             requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
         elif text == "status":
             kirim_status_lengkap()
