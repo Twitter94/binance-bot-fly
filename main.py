@@ -174,25 +174,28 @@ def sb_select(filters=""):
 def sb_delete(order_id):
     try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=5)
     except: pass
+
+def sync_3_sumber():
+    data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
+    data_db = sb_select(f"status=eq.OPEN")
+    if not isinstance(data_binance, list): return
+    db_dict = {str(d['binance_order_id']): d for d in data_db if 'binance_order_id' in d}
+    count = 0
+    for o in data_binance:
+        order_id = str(o['orderId']); ada_di_db = order_id in db_dict
+        if o['side'] == 'BUY' and o['status'] == 'FILLED' and o.get('fills'):
+            harga = float(o['fills'][0]['price']); qty = float(o['executedQty']); fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+            if not ada_di_db: sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(time.time())}); count += 1
+        if o['side'] == 'SELL' and o['status'] == 'FILLED' and ada_di_db: sb_delete(db_dict[order_id]['id']); count += 1
+    for order_id, d in db_dict.items():
+        if not any(str(o['orderId']) == order_id for o in data_binance): sb_delete(d['id']); count += 1
+    if count > 0: log_only(f"🔄 Sync: {count} data diperbaiki")
+
 def bersihin_sampah():
-    # Hapus data yg SUDAH SELESAI dan umur > 7 hari
     tujuh_hari_lalu = int(time.time()) - (7 * 24 * 3600)
-    try:
-        # status != OPEN dan time < 7 hari lalu
-        r = requests.delete(
-            f"{SUPABASE_URL}/rest/v1/{TABEL}?status=neq.OPEN&time=lt.{tujuh_hari_lalu}", 
-            headers=SB_HEADERS, 
-            timeout=5
-        )
-        if r.status_code in [200,204]:
-            log_only("🧹 Bersihin sampah DB: data CLOSED >7 hari dihapus")
-    except Exception as e:
-        log_only(f"⚠️ Gagal bersihin sampah: {repr(e)}")
-    
-    # Kosongin flag notif biar RAM enteng
-    global NOTIF_FLAGS
-    NOTIF_FLAGS = {"error": False, "saldo_kurang": False, "critical_msg": ""}
-    gc.collect() # paksa python buang sampah RAM
+    try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?status=neq.OPEN&time=lt.{tujuh_hari_lalu}", headers=SB_HEADERS, timeout=5)
+    except: pass
+    gc.collect()
 
 def signed_request(method, endpoint, params=None):
     if params is None: params = {}
