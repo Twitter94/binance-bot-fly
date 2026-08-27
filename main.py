@@ -127,7 +127,7 @@ def recovery_sync():
     log_only("🔄 MENJALANKAN RECOVERY SYNC")
     sync_3_sumber()
     bersihin_sampah()
-    notif_penting("✅ RECOVERY SELESAI")
+    log_only("✅ RECOVERY SELESAI")
     
 def save_to_json(data):
     try:
