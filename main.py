@@ -382,8 +382,18 @@ def cek_sell_instan_darurat(price):
                     notif_penting(f"✅ MODE 1 SUKSES\nJual {qty} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
         else: log_only(f"🛑 MODE 1 DITAHAN: Harga {price:.2f} < Buy Pertama {harga_buy_pertama:.2f}")
 
+LAST_SYNC_CICILAN = 0 # taruh ini di atas sejajar sama LAST_RECOVERY = 0
+
 def sync_3_sumber():
-    log_only("SYNC: Cek 1-1 Order ke Binance")
+    global LAST_SYNC_CICILAN
+    sekarang = time.time()
+
+    # CUMA JALAN 1X TIAP 3 DETIK
+    if sekarang - LAST_SYNC_CICILAN < 3:
+        return
+    LAST_SYNC_CICILAN = sekarang
+
+    log_only("SYNC CICILAN: Ambil 10 order terbaru")
 
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     data_json = load_and_clear_json()
@@ -398,51 +408,39 @@ def sync_3_sumber():
     count_tambah = 0
     count_hapus = 0
 
-    # 2. CEK SEMUA DATA DI DB, MASIH ADA DI BINANCE APA GAK
-    for order_id, d in list(db_dict.items()):
-        try:
-            cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
-            time.sleep(0.1)
+    # 2. AMBIL 10 ORDER TERBARU DARI BINANCE SAJA
+    data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 10})
 
-            if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL':
-                sb_delete(d['id'])
-                count_hapus += 1
-                log_only(f"HAPUS: Order {order_id} harga {d['price']:.2f} sudah TP di Binance")
-            
-            elif cek_detail.get('status')!= 'FILLED' or cek_detail.get('side')!= 'BUY':
-                sb_delete(d['id'])
-                count_hapus += 1
-                log_only(f"HAPUS: Order {order_id} harga {d['price']:.2f} sudah tidak ada di Binance")
+    if isinstance(data_binance, list):
+        for o in data_binance:
+            order_id = str(o['orderId'])
 
-        except Exception as e:
-            log_only(f"SKIP CEK: Order {order_id} error {repr(e)}")
+            # KALAU BARU DAN BUY FILLED = MASUKIN KE DB
+            if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0 and order_id not in db_dict:
+                harga = float(o['fills'][0]['price']); qty = float(o['executedQty'])
+                fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+                sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
+                count_tambah += 1
+                log_only(f"TAMBAH: Ketemu BUY baru di {harga:.2f}")
 
-    # 3. CARI ORDER BUY BARU DI BINANCE - TANPA PARAMETER SIDE
-    all_binance_buy = []
-    start_time = 0
-    while True:
-        params = {"symbol":SYMBOL, "limit": 1000} # HAPUS side="BUY" DISINI
-        if start_time > 0: params["startTime"] = start_time
-        data_batch = signed_request("GET", "/api/v3/allOrders", params)
-        if not isinstance(data_batch, list) or len(data_batch) == 0: break
-        for o in data_batch:
-            # FILTER MANUAL DI SINI
-            if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and float(o['executedQty']) > 0: 
-                all_binance_buy.append(o)
-        start_time = data_batch[-1]['time'] + 1
-        if len(data_batch) < 1000: break
-        time.sleep(0.5)
+            # KALAU UDAH ADA DI DB = CEK APA UDAH TP/SELL
+            elif order_id in db_dict:
+                try:
+                    cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
+                    time.sleep(0.1) # jeda biar gak kena rate limit
+                    if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL':
+                        sb_delete(db_dict[order_id]['id'])
+                        count_hapus += 1
+                        log_only(f"HAPUS: Order {db_dict[order_id]['price']:.2f} sudah TP di Binance")
+                    elif cek_detail.get('status')!= 'FILLED':
+                        sb_delete(db_dict[order_id]['id'])
+                        count_hapus += 1
+                        log_only(f"HAPUS: Order {db_dict[order_id]['price']:.2f} sudah CANCEL di Binance")
+                except Exception as e:
+                    log_only(f"SKIP CEK TP: Order {order_id} error {repr(e)}")
 
-    for o in all_binance_buy:
-        order_id = str(o['orderId'])
-        if order_id not in db_dict and o.get('fills') and len(o['fills']) > 0:
-            harga = float(o['fills'][0]['price']); qty = float(o['executedQty'])
-            fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
-            sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
-            count_tambah += 1
-    
-    if count_tambah > 0: notif_penting(f"RECOVERY: Menambahkan {count_tambah} order baru ke DB")
-    if count_hapus > 0: notif_penting(f"CLEAN: Menghapus {count_hapus} order yg sudah TP/Cancel")
+    if count_tambah > 0: notif_penting(f"RECOVERY: +{count_tambah} order baru")
+    if count_hapus > 0: notif_penting(f"CLEAN: -{count_hapus} order TP/Cancel")
     log_only("Sync Selesai")
 
 def cek_order_binance_sudah_ada(price_target):
