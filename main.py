@@ -374,6 +374,7 @@ def cek_signal_sell(price):
             return True, price, order_data, is_top_grid
     return False, 0, None, False
 
+
 def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
     if btc < BINANCE_RULES['min_qty']:
@@ -390,21 +391,30 @@ def cek_sell_instan_darurat(price):
         try:
             harga_buy_pertama = min([d['price'] for d in data_db])
             harga_buy_terakhir = max([d['price'] for d in data_db])
-            tp_terakhir = harga_buy_terakhir + ATR_MANAGER['jarak']
+            # AMBIL TP DARI DB DULU. KALAU GA ADA BARU HITUNG
+            tp_terakhir = data_db[0].get('tp', harga_buy_terakhir + ATR_MANAGER['jarak'])
         except:
             pass
 
     # MODE 3 BARU: ADA DATA TAPI HARGA UDAH KELEWAT TINGGI JAUH
-    if len(data_db) > 0 and price > tp_terakhir + (ATR_MANAGER['jarak'] * 0.5):
+    grid = ATR_MANAGER['jarak']
+    if len(data_db) > 0 and price > tp_terakhir + (grid * 0.5):
         qty = btc # Ambil semua BTC mentah dulu
         step = BINANCE_RULES['step_size']
-        # PAKSA NAIK SAMPAI LOLOS MIN NOTIONAL 5.01
-        while price * qty < BINANCE_RULES['min_notional'] + 0.01:
-            qty += step
-            if qty > 0.1: break # safety
+        qty_str = ""
+        nilai_jual = 0
 
-        qty_str = format_qty(qty) # Baru diformat
-        nilai_jual = price * float(qty_str)
+        # PAKSA NAIK SAMPAI LOLOS MIN NOTIONAL SETELAH FORMAT
+        while True:
+            qty_str = format_qty(qty)
+            nilai_jual = price * float(qty_str)
+            if nilai_jual >= BINANCE_RULES['min_notional'] + 0.01:
+                break
+            qty += step
+            if qty > btc + 0.001: # safety biar ga infinite
+                log_only("GAGAL MODE 3: Qty mentok safety")
+                break
+
         notif_penting(f"🚨 <b>MODE 3: HARGA KELEWAT TP</b>\nBUY: {harga_buy_pertama:.2f}\nTP: {tp_terakhir:.2f}\nSekarang: {price:.2f}\nJUAL LGSG: {qty_str} @ {price:.2f}\nDapat: {nilai_jual:.2f} USDT")
         try:
             res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
@@ -474,7 +484,6 @@ def cek_sell_instan_darurat(price):
                     log_only(f"GAGAL MODE 1 SELL: {repr(e)}")
         else:
             log_only(f"🛑 MODE 1 DITAHAN: Harga {price:.2f} < Buy Pertama {harga_buy_pertama:.2f}")
-
 def sync_3_sumber():
     global LAST_SYNC_CICILAN
     sekarang = time.time()
