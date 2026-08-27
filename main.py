@@ -397,6 +397,7 @@ def sync_3_sumber():
 
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     data_json = load_and_clear_json()
+    _, btc_total = get_all_balance()
 
     # 1. PINDAHIN JSON DULU
     if len(data_json) > 0:
@@ -408,7 +409,21 @@ def sync_3_sumber():
     count_tambah = 0
     count_hapus = 0
 
-    # 2. AMBIL 10 ORDER TERBARU DARI BINANCE SAJA
+    # 2. MODE DARURAT: ADA BTC TAPI DB KOSONG = CARI SAMPAI KETEMU
+    if btc_total > 0.00001 and len(data_db) == 0:
+        log_only(f"DARURAT: Ada BTC {btc_total:.8f} tapi DB kosong. Scan 50 order terakhir...")
+        data_scan = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 50})
+        if isinstance(data_scan, list):
+            for o in reversed(data_scan): # dari yg paling baru
+                if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills'):
+                    harga = float(o['fills'][0]['price']); qty = float(o['executedQty']); order_id = str(o['orderId'])
+                    fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+                    sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
+                    notif_penting(f"RECOVERY DARURAT: Ketemu BUY di {harga:.2f}")
+                    count_tambah += 1
+                    break # ketemu 1 langsung stop
+
+    # 3. AMBIL 10 ORDER TERBARU DARI BINANCE SAJA - BUAT CICILAN
     data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 10})
 
     if isinstance(data_binance, list):
@@ -427,7 +442,7 @@ def sync_3_sumber():
             elif order_id in db_dict:
                 try:
                     cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
-                    time.sleep(0.1) # jeda biar gak kena rate limit
+                    time.sleep(0.1) 
                     if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL':
                         sb_delete(db_dict[order_id]['id'])
                         count_hapus += 1
