@@ -123,6 +123,12 @@ def cek_command_telegram():
             requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
     except: pass
 
+def recovery_sync():
+    log_only("🔄 MENJALANKAN RECOVERY SYNC")
+    sync_3_sumber()
+    bersihin_sampah()
+    notif_penting("✅ RECOVERY SELESAI")
+    
 def save_to_json(data):
     try:
         pending = []
@@ -440,7 +446,6 @@ def sync_3_sumber():
     else: log_only("✅ Sync Selesai: 100% Sinkron")
 
     cek_sell_instan_darurat(get_price()) # abis sync langsung cek mau TP gak
-    sync_3_sumber()
     bersihin_sampah()
 
 def cek_order_binance_sudah_ada(price_target):
