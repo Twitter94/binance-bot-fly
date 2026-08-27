@@ -401,18 +401,15 @@ def sync_3_sumber():
     # 2. CEK SEMUA DATA DI DB, MASIH ADA DI BINANCE APA GAK
     for order_id, d in list(db_dict.items()):
         try:
-            # Cek status order ini di Binance
             cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
-            time.sleep(0.1) # biar gak kena rate limit
+            time.sleep(0.1)
 
             if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL':
-                # UDAH KE SELL = HAPUS DARI DB
                 sb_delete(d['id'])
                 count_hapus += 1
                 log_only(f"HAPUS: Order {order_id} harga {d['price']:.2f} sudah TP di Binance")
             
             elif cek_detail.get('status')!= 'FILLED' or cek_detail.get('side')!= 'BUY':
-                # UDAH DI CANCEL / GAGAL = HAPUS DARI DB
                 sb_delete(d['id'])
                 count_hapus += 1
                 log_only(f"HAPUS: Order {order_id} harga {d['price']:.2f} sudah tidak ada di Binance")
@@ -420,17 +417,18 @@ def sync_3_sumber():
         except Exception as e:
             log_only(f"SKIP CEK: Order {order_id} error {repr(e)}")
 
-    # 3. CARI ORDER BUY BARU DI BINANCE YG BELUM ADA DI DB
-    # Pakai paging biar tanpa batas
+    # 3. CARI ORDER BUY BARU DI BINANCE - TANPA PARAMETER SIDE
     all_binance_buy = []
     start_time = 0
     while True:
-        params = {"symbol":SYMBOL, "side":"BUY", "limit": 1000}
+        params = {"symbol":SYMBOL, "limit": 1000} # HAPUS side="BUY" DISINI
         if start_time > 0: params["startTime"] = start_time
         data_batch = signed_request("GET", "/api/v3/allOrders", params)
         if not isinstance(data_batch, list) or len(data_batch) == 0: break
         for o in data_batch:
-            if o.get('status') == 'FILLED' and float(o['executedQty']) > 0: all_binance_buy.append(o)
+            # FILTER MANUAL DI SINI
+            if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and float(o['executedQty']) > 0: 
+                all_binance_buy.append(o)
         start_time = data_batch[-1]['time'] + 1
         if len(data_batch) < 1000: break
         time.sleep(0.5)
