@@ -555,13 +555,14 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             notif_penting(f"❌ ERROR BUY: {repr(e)}")
         finally: 
             BUYING_LOCK.discard(price_grid)
+            
     if side=="SELL":
-        qty_db = float(order_data['qty'])
+        qty_db = format_qty(float(order_data['qty'])) # <--- FIX 1: PAKE format_qty biar jadi string "0.00007000"
         _, btc = get_all_balance()
-        if btc < qty_db: 
+        if float(btc) < float(qty_db):  # <--- FIX 2: compare float ke float
             notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty {qty_db}")
             return
-        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db})
+        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db}) # <--- FIX 3: kirim string
         if 'orderId' not in res: 
             log_only(f"❌ SELL GAGAL: {res}")
             return
