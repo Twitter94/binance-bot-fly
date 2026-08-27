@@ -360,10 +360,9 @@ def cek_sell_instan_darurat(price):
                     res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
                     if 'orderId' in res: profit = (price - harga_beli_asli) * float(qty); notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty} @ {price:.2f}\nProfit: {profit:.4f} USDT")
         else:
-            qty = hitung_qty_aman(price); nilai_jual = price * float(qty); butuh_min = hitung_butuh_modal(price, qty)
-            log_only(f"📊 MODE 2B CEK:def sync_3_sumber():
-    global PERLU_REENTRY
-    log_only("🔄 SYNC 3 SUMBER: Binance + DB + JSON")
+    qty = hitung_qty_aman(price); nilai_jual = price * float(qty); butuh_min = hitung_butuh_modal(price, qty)
+    log_only(f"MODE 2B CEK: Qty={qty} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
+    log_only("SYNC 3 SUMBER: Binance + DB + JSON")
     count_tambah = 0
     count_tp = 0
 
