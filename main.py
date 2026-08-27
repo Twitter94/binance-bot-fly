@@ -382,54 +382,41 @@ def cek_sell_instan_darurat(price):
                     notif_penting(f"✅ MODE 1 SUKSES\nJual {qty} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
         else: log_only(f"🛑 MODE 1 DITAHAN: Harga {price:.2f} < Buy Pertama {harga_buy_pertama:.2f}")
 
-
 def sync_3_sumber():
     global PERLU_REENTRY
     log_only("SYNC 3 SUMBER: Binance + DB + JSON")
     count_tambah = 0
-    count_tp = 0
 
-    data_binance = []
-    for i in range(3):
-        data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
-        if isinstance(data_binance, list):
-            break
-        log_only(f"Gagal ambil data Binance retry {i+1}/3")
-        time.sleep(2)
-
-    if not isinstance(data_binance, list):
-        log_only("CRITICAL: Gagal ambil data Binance 3x. SYNC DIBATALKAN. DB AMAN 100%")
-        return
-
-    data_db = sb_select(f"status=eq.OPEN")
+    data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     data_json = load_and_clear_json()
+    _, btc_total = get_all_balance()
 
+    # LANGKAH 1: MASUKIN JSON DULU
     if len(data_json) > 0:
         notif_penting(f"Menemukan {len(data_json)} order di JSON. Memindahkan ke DB...")
         for p in data_json: sb_insert(p)
-        data_db = sb_select(f"status=eq.OPEN")
+        data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
 
-    db_dict = {str(d['binance_order_id']): d for d in data_db if 'binance_order_id' in d}
-    binance_dict = {str(o['orderId']): o for o in data_binance}
+    # LANGKAH 2: KALAU ADA BTC TAPI DB KOSONG = AMBIL DARI BINANCE PAKSA
+    if btc_total > 0.00001 and len(data_db) == 0:
+        log_only(f"⚠️ DARURAT: Ada BTC {btc_total:.8f} tapi DB kosong. Paksa ambil dari Binance...")
+        data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 1000}) # limit 1000
+        if isinstance(data_binance, list):
+            for o in data_binance:
+                if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and float(o['executedQty']) > 0:
+                    harga = float(o['fills'][0]['price']); qty = float(o['executedQty']); order_id = o['orderId']
+                    fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+                    sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(time.time())})
+                    count_tambah += 1; notif_penting(f"RECOVERY: Ketemu BUY Floating di {harga:.2f}")
+                    break # cukup ambil 1 yg paling baru
 
-    for order_id, o in binance_dict.items():
-        ada_di_db = order_id in db_dict
-        if o['side'] == 'BUY' and o['status'] == 'FILLED' and o.get('fills'):
-            harga = float(o['fills'][0]['price']); qty = float(o['executedQty']); fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
-            if not ada_di_db:
-                sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(time.time())})
-                count_tambah += 1; notif_penting(f"SYNC: Ketemu BUY Floating di {harga:.2f}. Udah masuk DB")
+    # LANGKAH 3: HAPUS HANYA KALAU BTC UDAH 0
+    if btc_total < 0.00001:
+        for d in data_db:
+            sb_delete(d['id'])
+            log_only(f"Hapus DB: BTC sudah 0, hapus catatan {d['price']:.2f}")
 
-    for order_id, d in db_dict.items():
-        if order_id not in binance_dict:
-            cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
-            if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL':
-                sb_delete(d['id']); count_tp += 1; log_only(f"Hapus DB: Order {order_id} sudah TP di Binance")
-            else:
-                log_only(f"SKIP: Order {order_id} harga {d['price']:.2f} masih ada di DB. Menunggu konfirmasi dari Binance")
-
-    if count_tambah > 0 or count_tp > 0: log_only(f"Sync Selesai: +{count_tambah} data baru, -{count_tp} data TP")
-    else: log_only("Sync Selesai: 100% Sinkron")
+    log_only(f"Sync Selesai: +{count_tambah} data recovery")
 
 def cek_order_binance_sudah_ada(price_target):
     data = signed_request("GET", "/api/v3/openOrders", {"symbol":SYMBOL})
