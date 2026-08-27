@@ -25,7 +25,7 @@ for v in ["API_KEY", "API_SECRET", "SUPA_URL", "SUPA_KEY", "TELE_TOKEN", "TELE_C
 
 SYMBOL = "BTCUSDT"
 LOOP_SEC = 3
-BUFFER_USDT = 0.5
+BUFFER_PERCENT = 0.005  # 0.5% = 0.5/100
 TABEL = "orders"
 RECOVERY_INTERVAL = 3600
 RE_ENTRY_MODE = True
@@ -301,7 +301,8 @@ def hitung_butuh_modal(price, qty):
     fee_buy = modal * fee
     fee_sell = modal * fee
     total_fee = fee_buy + fee_sell
-    return modal + total_fee + BUFFER_USDT
+    buffer_usdt = modal * BUFFER_PERCENT # INI YG BARU. 0.5% dari modal
+    return modal + total_fee + buffer_usdt
 
 def get_atr(symbol, period=ATR_PERIOD, interval=ATR_TIMEFRAME):
     try:
