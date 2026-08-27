@@ -132,6 +132,52 @@ def cek_tabel_supabase():
         notif_penting(f"⚠️ Gagal konek Supabase: {repr(e)}. Retry 5 detik")
         time.sleep(5)
 
+def bersihin_sampah():
+    tujuh_hari_lalu = int(time.time()) - (7 * 24 * 3600)
+    try:
+        requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?status=neq.OPEN&time=lt.{tujuh_hari_lalu}", headers=SB_HEADERS, timeout=5)
+    except:
+        pass
+    gc.collect()
+
+def signed_request(method, endpoint, params=None):
+    if params is None:
+        params = {}
+    try:
+        params['timestamp'] = int(time.time() * 1000)
+        params['recvWindow'] = 60000
+        query_string = urlencode(params)
+        signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+        url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
+        headers = {'X-MBX-APIKEY': BINANCE_API_KEY}
+        r = requests.request(method, url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            log_only(f"❌ BINANCE ERROR {r.status_code}\n{r.text}")
+            return {}
+        return r.json()
+    except Exception as e:
+        log_only(f"❌ SIGNED_REQUEST CRASH\n{repr(e)}")
+        return {}
+
+def get_price():
+    try:
+        r = requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=5)
+        r.raise_for_status()
+        return float(r.json()['price'])
+    except:
+        time.sleep(10)
+        return 0
+
+def sb_select(filters=""):
+    try:
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except:
+        return []
+
 def sb_insert(data):
     try:
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
@@ -142,36 +188,13 @@ def sb_insert(data):
     except Exception as e:
         notif_penting(f"❌ SB_INSERT CRASH: {repr(e)}")
         return []
-def sb_select(filters=""):
-    try: r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
-    if r.status_code!= 200: return []; data = r.json(); return data if isinstance(data, list) else []
-    except: return []
-
-def sb_delete(order_id):
-    try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=5)
-    except: pass
-
-def bersihin_sampah():
-    tujuh_hari_lalu = int(time.time()) - (7 * 24 * 3600)
-    try: requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?status=neq.OPEN&time=lt.{tujuh_hari_lalu}", headers=SB_HEADERS, timeout=5)
-    except: pass; gc.collect()
-
-def signed_request(method, endpoint, params=None):
-    if params is None: params = {}
-    try: params['timestamp'] = int(time.time() * 1000); params['recvWindow'] = 60000; query_string = urlencode(params); signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest(); url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"; headers = {'X-MBX-APIKEY': BINANCE_API_KEY}; r = requests.request(method, url, headers=headers, timeout=10)
-    if r.status_code!= 200: log_only(f"❌ BINANCE ERROR {r.status_code}\n{r.text}"); return {}
-    return r.json()
-    except Exception as e: log_only(f"❌ SIGNED_REQUEST CRASH\n{repr(e)}"); return {}
-
-def get_price():
-    try: r = requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=5); r.raise_for_status(); return float(r.json()['price'])
-    except: time.sleep(10); return 0
 
 def get_all_balance():
     data = signed_request("GET", "/api/v3/account")
     if 'balances' not in data: return 0,0
-    usdt = float(next((b['free'] for b in data['balances'] if b['asset']=='USDT'), 0)); btc = float(next((b['free'] for b in data['balances'] if b['asset']=='BTC'), 0)); return usdt, btc
-
+    usdt = float(next((b['free'] for b in data['balances'] if b['asset']=='USDT'), 0))
+    btc = float(next((b['free'] for b in data['balances'] if b['asset']=='BTC'), 0))
+    return usdt, btc
 def get_binance_rules(symbol):
     try: data = requests.get(f"{BASE_URL}/api/v3/exchangeInfo?symbol={symbol}", timeout=5).json()
     for f in data['symbols'][0]['filters']:
@@ -318,8 +341,9 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         finally: BUYING_LOCK.discard(price_grid)
     if side=="SELL":
         qty_db = hitung_qty_aman(price_grid); _, btc = get_all_balance()
-        if btc < float(qty_db): notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty {qty_db}"); sb_delete(order_data['id']); return
-        try: res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db})
+        qty_db = float(order_data['qty'])
+        if btc < qty_db: notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty {qty_db}")
+        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db})
         if 'orderId' not in res: log_only(f"❌ SELL GAGAL: {res}"); return
         if order_data and 'fills' in res: harga_beli = order_data['price']; fee_buy_db = order_data.get('fee', 0); qty_fill = float(res['executedQty']); fee_sell = sum([float(f['commission']) * float(f['price']) for f in res['fills']]); profit = (price_grid * qty_fill) - (harga_beli * qty_fill) - fee_buy_db - fee_sell; DAILY_STATS["profit_usdt"] += profit; DAILY_STATS["trade_count"] += 1; sb_delete(order_data['id']); usdt, _ = get_all_balance()
         if NOTIF_SENT["sell"]!= price_grid: notif_penting(f"🔴 <b>SELL TP</b>\nHarga: {price_grid:.2f}\nProfit: {profit:.4f} USDT\nFee Buy: {fee_buy_db:.4f}\nFee Sell: {fee_sell:.4f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}"); NOTIF_SENT["sell"] = price_grid; NOTIF_SENT["buy"] = None
@@ -356,8 +380,8 @@ async def main():
             price = get_price()
             if price == 0: await asyncio.sleep(10); continue
             signal_buy, grid_buy = cek_signal_buy(price); signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
-            if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(grid_sell), order_data, is_top) # INI YG DI FIX
             if signal_buy: place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
+            if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(grid_sell), order_data, is_top)
             if NOTIF_FLAGS["error"] == True: notif_penting(f"✅ <b>BOT SUDAH NORMAL KEMBALI</b>\n<b>Error terakhir:</b> <code>{NOTIF_FLAGS['critical_msg']}</code>\n<b>Waktu Pulih:</b> {datetime.now(WIB).strftime('%H:%M:%S')}"); NOTIF_FLAGS["error"]=False; NOTIF_FLAGS["critical_msg"]=""
             gc.collect(); await asyncio.sleep(LOOP_SEC)
         except Exception as e:
