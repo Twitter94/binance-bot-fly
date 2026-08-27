@@ -497,9 +497,9 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         except Exception as e: notif_penting(f"❌ ERROR BUY: {repr(e)}")
         finally: BUYING_LOCK.discard(price_grid)
     if side=="SELL":
-        # PATCH 2: Qty ambil dari DB
-        qty_db = format_qty(float(order_data['qty']))
-
+    # PATCH 2: Qty hitung ulang biar lolos min 5 USDT
+    qty_db = hitung_qty_aman(price_grid)  # <--- GANTI JADI INI
+    
         _, btc = get_all_balance()
         if btc < float(qty_db):
             notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty DB {qty_db}")
