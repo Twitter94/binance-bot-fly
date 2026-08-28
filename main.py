@@ -25,7 +25,7 @@ for v in ["API_KEY", "API_SECRET", "SUPA_URL", "SUPA_KEY", "TELE_TOKEN", "TELE_C
 
 SYMBOL = "BTCUSDT"
 LOOP_SEC = 3
-BUFFER_PERCENT = 0.005  # 0.5% = 0.5/100
+BUFFER_USDT = 0.5
 TABEL = "orders"
 RECOVERY_INTERVAL = 3600
 RE_ENTRY_MODE = True
@@ -91,18 +91,14 @@ def kirim_status_lengkap():
     price = get_price()
     jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
     mode = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
-
-    # FIX: AMBIL DARI PALING ATAS BIAR TP NYA BENER
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
-
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc")
     posisi_txt = "TIDAK ADA POSISI"
     tp_txt = ""
     if len(data_open) > 0:
-        harga_buy = data_open[0]['price'] # grid paling atas
+        harga_buy = data_open[0]['price']
         tp = harga_buy + jarak
-        posisi_txt = f"{len(data_open)} Grid" # FIX: DINAMIS
-        tp_txt = f"\n\n📌 POSISI\n{len(data_open)} Grid | TP: ${tp:.2f}" # FIX: DINAMIS
-
+        posisi_txt = f"1 Grid"
+        tp_txt = f"\n\n📌 POSISI\n1. BUY ${harga_buy:.2f} -> TP ${tp:.2f}"
     butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
     status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
     emoji = "🔴" if status_txt=="PAUSE" else "🟢"
@@ -203,13 +199,12 @@ def signed_request(method, endpoint, params=None):
         url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
         headers = {'X-MBX-APIKEY': BINANCE_API_KEY}
         r = requests.request(method, url, headers=headers, timeout=10)
-        data = r.json()
         if r.status_code!= 200:
-            notif_penting(f"❌ BINANCE ERROR {r.status_code}\n<code>{data}</code>") # <--- INI YG DIGANTI
+            log_only(f"❌ BINANCE ERROR {r.status_code}\n{r.text}")
             return {}
-        return data
+        return r.json()
     except Exception as e:
-        notif_penting(f"❌ SIGNED_REQUEST CRASH\n<code>{repr(e)}</code>") # <--- INI JUGA
+        log_only(f"❌ SIGNED_REQUEST CRASH\n{repr(e)}")
         return {}
 
 def get_price():
@@ -275,26 +270,29 @@ def get_binance_fee():
 
 def format_qty(qty):
     step = BINANCE_RULES['step_size']
+    # Bulatkan ke bawah ke kelipatan step_size
     qty = math.floor(qty / step) * step
-    if qty < BINANCE_RULES['min_qty']: # TAMBAH PENGAMAN
-        qty = BINANCE_RULES['min_qty']
+    # Format 8 digit, hapus 0 di belakang
     return f"{qty:.8f}".rstrip('0').rstrip('.')
+
 def hitung_qty_aman(harga):
-    step = BINANCE_RULES['step_size']
     min_notional = BINANCE_RULES['min_notional'] # 5.0
+    min_qty = BINANCE_RULES['min_qty']
+    step = BINANCE_RULES['step_size']
     
-    qty = 5.0 / harga # target modal 5 usdt
+    qty_dari_usdt = min_notional / harga
+    qty = max(min_qty, qty_dari_usdt)
     
-    # PAKSA NAIK SAMPAI LOLOS MIN NOTIONAL
-    while True:
+    qty_str = format_qty(qty) # "0.00007000"
+    nilai = harga * float(qty_str)
+    
+    # Kalau masih kurang dari 5.01, tambahin 1 step biar aman
+    while nilai < min_notional + 0.01:
+        qty += step
         qty_str = format_qty(qty)
         nilai = harga * float(qty_str)
-        if nilai >= min_notional + 0.01: # +0.01 buat pengaman
-            break
-        qty += step # tambahin 1 step
-        if qty > 0.01: # safety biar ga infinite
-            break
-            
+        if qty > 0.1: break # safety
+        
     return qty_str
 
 def hitung_butuh_modal(price, qty): 
@@ -303,8 +301,7 @@ def hitung_butuh_modal(price, qty):
     fee_buy = modal * fee
     fee_sell = modal * fee
     total_fee = fee_buy + fee_sell
-    buffer_usdt = modal * BUFFER_PERCENT # INI YG BARU. 0.5% dari modal
-    return modal + total_fee + buffer_usdt
+    return modal + total_fee + BUFFER_USDT
 
 def get_atr(symbol, period=ATR_PERIOD, interval=ATR_TIMEFRAME):
     try:
@@ -362,18 +359,21 @@ def cek_signal_buy(price):
 
 def cek_signal_sell(price):
     update_atr_manager()
-    if ATR_MANAGER["jarak"] is None:
+    if ATR_MANAGER["jarak"] is None: 
         return False, 0, None, False
     jarak = ATR_MANAGER["jarak"]
-
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1") # 1. ganti asc -> desc
-
-    if len(data_open) > 0:
-        harga_beli_teratas = data_open[0]['price']
-        if price >= harga_beli_teratas + jarak:
-            return True, price, None, True # 2. kirim None karena SELL ALL
-
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc&limit=1")
+    if len(data_open) > 0: 
+        order_data = data_open[0]
+        harga_beli = order_data['price']
+        if price >= harga_beli + jarak: 
+            data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
+            is_top_grid = False
+            if len(data_tertinggi) > 0 and data_tertinggi[0]['id'] == order_data['id']: 
+                is_top_grid = True
+            return True, price, order_data, is_top_grid
     return False, 0, None, False
+
 
 def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
@@ -392,7 +392,7 @@ def cek_sell_instan_darurat(price):
             harga_buy_pertama = min([d['price'] for d in data_db])
             harga_buy_terakhir = max([d['price'] for d in data_db])
             # AMBIL TP DARI DB DULU. KALAU GA ADA BARU HITUNG
-            tp_terakhir = harga_buy_terakhir + ATR_MANAGER['jarak'] # <- BARIS 358 VERSI BARU
+            tp_terakhir = data_db[0].get('tp', harga_buy_terakhir + ATR_MANAGER['jarak'])
         except:
             pass
 
@@ -484,35 +484,30 @@ def cek_sell_instan_darurat(price):
                     log_only(f"GAGAL MODE 1 SELL: {repr(e)}")
         else:
             log_only(f"🛑 MODE 1 DITAHAN: Harga {price:.2f} < Buy Pertama {harga_buy_pertama:.2f}")
-
 def sync_3_sumber():
     global LAST_SYNC_CICILAN
     sekarang = time.time()
-    if sekarang - LAST_SYNC_CICILAN < 60: # FIX: DARI 3 JADI 60 DETIK
+    if sekarang - LAST_SYNC_CICILAN < 3: 
         return
     LAST_SYNC_CICILAN = sekarang
     log_only("SYNC CICILAN: Ambil 10 order terbaru")
-
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     data_json = load_and_clear_json()
     _, btc_total = get_all_balance()
-
-    if len(data_json) > 0:
+    if len(data_json) > 0: 
         notif_penting(f"Ada {len(data_json)} order di JSON. Pindahin ke DB...")
-    for p in data_json:
+    for p in data_json: 
         sb_insert(p)
-
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     db_dict = {str(d['binance_order_id']): d for d in data_db if 'binance_order_id' in d}
     count_tambah = 0
     count_hapus = 0
-
-    if btc_total > 0.00001 and len(data_db) == 0:
+    if btc_total > 0.00001 and len(data_db) == 0: 
         log_only(f"DARURAT: Ada BTC {btc_total:.8f} tapi DB kosong. Scan 50 order terakhir...")
         data_scan = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 50})
         if isinstance(data_scan, list):
             for o in reversed(data_scan):
-                if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills'):
+                if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills'): 
                     harga = float(o['fills'][0]['price'])
                     qty = float(o['executedQty'])
                     order_id = str(o['orderId'])
@@ -520,36 +515,35 @@ def sync_3_sumber():
                     sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
                     notif_penting(f"RECOVERY DARURAT: Ketemu BUY di {harga:.2f}")
                     count_tambah += 1
-
+                    break
     data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 10})
     if isinstance(data_binance, list):
-        for o in data_binance:
+        for o in data_binance: 
             order_id = str(o['orderId'])
-            if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0 and order_id not in db_dict:
+            if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0 and order_id not in db_dict: 
                 harga = float(o['fills'][0]['price'])
                 qty = float(o['executedQty'])
                 fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
                 sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
                 count_tambah += 1
-                notif_penting(f"➕ TAMBAH: Ketemu BUY baru di {harga:.2f}")
+                log_only(f"TAMBAH: Ketemu BUY baru di {harga:.2f}")
             elif order_id in db_dict:
-                try:
+                try: 
                     cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
                     time.sleep(0.1)
-                    if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL':
+                    if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL': 
                         sb_delete(db_dict[order_id]['id'])
                         count_hapus += 1
                         log_only(f"HAPUS: Order {db_dict[order_id]['price']:.2f} sudah TP di Binance")
-                    elif cek_detail.get('status')!= 'FILLED':
+                    elif cek_detail.get('status')!= 'FILLED': 
                         sb_delete(db_dict[order_id]['id'])
                         count_hapus += 1
                         log_only(f"HAPUS: Order {db_dict[order_id]['price']:.2f} sudah CANCEL di Binance")
-                except Exception as e:
+                except Exception as e: 
                     log_only(f"SKIP CEK TP: Order {order_id} error {repr(e)}")
-
-    if count_tambah > 0:
+    if count_tambah > 0: 
         notif_penting(f"RECOVERY: +{count_tambah} order baru")
-    if count_hapus > 0:
+    if count_hapus > 0: 
         notif_penting(f"CLEAN: -{count_hapus} order TP/Cancel")
     log_only("Sync Selesai")
 
@@ -564,7 +558,6 @@ def cek_order_binance_sudah_ada(price_target):
 
 def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
     global NOTIF_FLAGS, NOTIF_SENT, BUYING_LOCK, PERLU_REENTRY, LAST_REENTRY_TIME
-    
     if side=="BUY":
         if price_grid in BUYING_LOCK: 
             return
@@ -615,19 +608,12 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             BUYING_LOCK.discard(price_grid)
             
     if side=="SELL":
-        # 1. AMBIL SEMUA GRID YG OPEN BUAT DIJUAL SEKALIGUS
-        semua_grid = sb_select(f"status=eq.OPEN&side=eq.BUY")
-        if len(semua_grid) == 0:
-            return
-        
-        # 2. JUMLAHIN SEMUA QTY DARI SEMUA GRID
-        total_qty = sum([float(g['qty']) for g in semua_grid])
-        qty_db = format_qty(total_qty)
+        qty_db = format_qty(float(order_data['qty'])) # PAKE format_qty biar jadi string "0.00007000"
         
         # CEK NOTIONAL DULU BIAR GA ERROR -1013
         nilai_jual = price_grid * float(qty_db)
         if nilai_jual < BINANCE_RULES['min_notional']:
-            notif_penting(f"❌ GAGAL SELL ALL: Nilai {nilai_jual:.2f} < Min 5 USDT. Qty: {qty_db}")
+            notif_penting(f"❌ GAGAL SELL: Nilai {nilai_jual:.2f} < Min 5 USDT. Qty: {qty_db}")
             return
         
         _, btc = get_all_balance()
@@ -635,35 +621,28 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty {qty_db}")
             return
             
-        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db})
+        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db}) # <--- CEK quantity BENER
         
         if 'orderId' not in res: 
             log_only(f"❌ SELL GAGAL: {res}")
             return
             
-        if 'fills' in res: 
-            # 3. HITUNG RATA2 HARGA BELI DARI SEMUA GRID
-            harga_beli_avg = sum([g['price'] * float(g['qty']) for g in semua_grid]) / total_qty
-            fee_buy_db = sum([g.get('fee', 0) for g in semua_grid])
+        if order_data and 'fills' in res: 
+            harga_beli = order_data['price']
+            fee_buy_db = order_data.get('fee', 0)
             qty_fill = float(res['executedQty'])
             fee_sell = sum([float(f['commission']) * float(f['price']) for f in res['fills']])
-            profit = (price_grid * qty_fill) - (harga_beli_avg * qty_fill) - fee_buy_db - fee_sell
+            profit = (price_grid * qty_fill) - (harga_beli * qty_fill) - fee_buy_db - fee_sell
             DAILY_STATS["profit_usdt"] += profit
             DAILY_STATS["trade_count"] += 1
-            
-            # 4. HAPUS SEMUA DATA DI DB BIAR STATUS JADI 0 GRID
-            for g in semua_grid:
-                sb_delete(g['id'])
-                
+            sb_delete(order_data['id'])
             usdt, _ = get_all_balance()
             if NOTIF_SENT["sell"]!= price_grid: 
-                notif_penting(f"🔴 <b>SELL ALL TP</b>\nHarga: {price_grid:.2f}\nQty: {qty_db}\nGrid: {len(semua_grid)}\nProfit: {profit:.4f} USDT\nFee Buy: {fee_buy_db:.4f}\nFee Sell: {fee_sell:.4f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
+                notif_penting(f"🔴 <b>SELL TP</b>\nHarga: {price_grid:.2f}\nProfit: {profit:.4f} USDT\nFee Buy: {fee_buy_db:.4f}\nFee Sell: {fee_sell:.4f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
                 NOTIF_SENT["sell"] = price_grid
                 NOTIF_SENT["buy"] = None
-                
             if NOTIF_FLAGS["saldo_kurang"] == True: 
                 notif_penting(f"✅ <b>DAPAT SALDO DARI TP</b>\nSaldo USDT: {usdt:.2f}")
-                
             if RE_ENTRY_MODE and is_top_grid:
                 if time.time() - LAST_REENTRY_TIME < REENTRY_COOLDOWN: 
                     notif_penting(f"⏳ <b>RE-ENTRY DITAHAN</b>\nTunggu {REENTRY_COOLDOWN} detik dulu")
@@ -680,7 +659,6 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                     PERLU_REENTRY = True
                     notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
 
-        
 async def main():
     notif_penting("1. BOT MULAI")
     global START_TIME, LAST_RECOVERY, PERLU_REENTRY
@@ -716,7 +694,7 @@ async def main():
     
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V11.63.41 FIX</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V11.63.40 FIX</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     
     kirim_keyboard()
     cek_sell_instan_darurat(harga_sekarang)
