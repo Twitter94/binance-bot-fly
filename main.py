@@ -271,11 +271,11 @@ def get_binance_fee():
 
 def format_qty(qty):
     step = BINANCE_RULES['step_size']
-    # Bulatkan ke bawah ke kelipatan step_size
     qty = math.floor(qty / step) * step
-    # Format 8 digit, hapus 0 di belakang
+    if qty < BINANCE_RULES['min_qty']: # TAMBAH INI
+        qty = BINANCE_RULES['min_qty']
     return f"{qty:.8f}".rstrip('0').rstrip('.')
-
+    
 def hitung_qty_aman(harga):
     step = BINANCE_RULES['step_size']
     min_notional = BINANCE_RULES['min_notional'] # 5.0
@@ -362,16 +362,20 @@ def cek_signal_sell(price):
     if ATR_MANAGER["jarak"] is None: 
         return False, 0, None, False
     jarak = ATR_MANAGER["jarak"]
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc&limit=1")
+    
+    # FIX: AMBIL GRID PALING ATAS
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1") 
+    
     if len(data_open) > 0: 
-        order_data = data_open[0]
-        harga_beli = order_data['price']
-        if price >= harga_beli + jarak: 
-            data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
-            is_top_grid = False
-            if len(data_tertinggi) > 0 and data_tertinggi[0]['id'] == order_data['id']: 
-                is_top_grid = True
-            return True, price, order_data, is_top_grid
+        order_data_teratas = data_open[0] # ini grid paling atas
+        harga_beli_teratas = order_data_teratas['price']
+        
+        # TP kalau harga udah nyentuh grid atas + jarak
+        if price >= harga_beli_teratas + jarak: 
+            is_top_grid = True # pasti true karena kita ambil yg paling atas
+            # order_data dikirim None karena di place_order_real kita udah ambil semua
+            return True, price, None, is_top_grid 
+            
     return False, 0, None, False
 
 
@@ -609,12 +613,18 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             BUYING_LOCK.discard(price_grid)
             
     if side=="SELL":
-        qty_db = format_qty(float(order_data['qty'])) # PAKE format_qty biar jadi string "0.00007000"
+        # FIX 1: AMBIL SEMUA GRID BUAT DIJUAL
+        semua_grid = sb_select(f"status=eq.OPEN&side=eq.BUY")
+        if len(semua_grid) == 0:
+            return
+        
+        total_qty = sum([float(g['qty']) for g in semua_grid])
+        qty_db = format_qty(total_qty)
         
         # CEK NOTIONAL DULU BIAR GA ERROR -1013
         nilai_jual = price_grid * float(qty_db)
         if nilai_jual < BINANCE_RULES['min_notional']:
-            notif_penting(f"❌ GAGAL SELL: Nilai {nilai_jual:.2f} < Min 5 USDT. Qty: {qty_db}")
+            notif_penting(f"❌ GAGAL SELL ALL: Nilai {nilai_jual:.2f} < Min 5 USDT. Qty: {qty_db}")
             return
         
         _, btc = get_all_balance()
@@ -622,28 +632,35 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             notif_penting(f"❌ GAGAL SELL: BTC {btc:.8f} < Qty {qty_db}")
             return
             
-        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db}) # <--- CEK quantity BENER
+        res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db})
         
         if 'orderId' not in res: 
             log_only(f"❌ SELL GAGAL: {res}")
             return
             
-        if order_data and 'fills' in res: 
-            harga_beli = order_data['price']
-            fee_buy_db = order_data.get('fee', 0)
+        if 'fills' in res: 
+            # FIX 2: HITUNG RATA2 HARGA BELI DARI SEMUA GRID
+            harga_beli_avg = sum([g['price'] * float(g['qty']) for g in semua_grid]) / total_qty
+            fee_buy_db = sum([g.get('fee', 0) for g in semua_grid])
             qty_fill = float(res['executedQty'])
             fee_sell = sum([float(f['commission']) * float(f['price']) for f in res['fills']])
-            profit = (price_grid * qty_fill) - (harga_beli * qty_fill) - fee_buy_db - fee_sell
+            profit = (price_grid * qty_fill) - (harga_beli_avg * qty_fill) - fee_buy_db - fee_sell
             DAILY_STATS["profit_usdt"] += profit
             DAILY_STATS["trade_count"] += 1
-            sb_delete(order_data['id'])
+            
+            # FIX 3: HAPUS SEMUA DATA DI DB
+            for g in semua_grid:
+                sb_delete(g['id'])
+                
             usdt, _ = get_all_balance()
             if NOTIF_SENT["sell"]!= price_grid: 
-                notif_penting(f"🔴 <b>SELL TP</b>\nHarga: {price_grid:.2f}\nProfit: {profit:.4f} USDT\nFee Buy: {fee_buy_db:.4f}\nFee Sell: {fee_sell:.4f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
+                notif_penting(f"🔴 <b>SELL ALL TP</b>\nHarga: {price_grid:.2f}\nQty: {qty_db}\nGrid: {len(semua_grid)}\nProfit: {profit:.4f} USDT\nFee Buy: {fee_buy_db:.4f}\nFee Sell: {fee_sell:.4f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
                 NOTIF_SENT["sell"] = price_grid
                 NOTIF_SENT["buy"] = None
+                
             if NOTIF_FLAGS["saldo_kurang"] == True: 
                 notif_penting(f"✅ <b>DAPAT SALDO DARI TP</b>\nSaldo USDT: {usdt:.2f}")
+                
             if RE_ENTRY_MODE and is_top_grid:
                 if time.time() - LAST_REENTRY_TIME < REENTRY_COOLDOWN: 
                     notif_penting(f"⏳ <b>RE-ENTRY DITAHAN</b>\nTunggu {REENTRY_COOLDOWN} detik dulu")
@@ -659,7 +676,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 else: 
                     PERLU_REENTRY = True
                     notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
-
+                
 async def main():
     notif_penting("1. BOT MULAI")
     global START_TIME, LAST_RECOVERY, PERLU_REENTRY
