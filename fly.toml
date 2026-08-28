@@ -1,11 +1,21 @@
-    app = "bahaya"
-    primary_region = "sin"
+app = "bahaya"
+primary_region = "sin"
 
-    [build]
-      dockerfile = "Dockerfile" # karena repo ini pake docker
+[build]
+dockerfile = "Dockerfile"
 
-    [env]
-      TZ = "Asia/Jakarta"
+[env]
+TZ = "Asia/Jakarta"
 
-    [processes]
-      app = "python main.py" # <--- PENTING. harus main.py
+[processes]
+app = "python main.py"
+
+[deploy]
+restart_policy = "always" # <- Crash auto nyala lagi
+
+# HAPUS [http_service] SEMUA. GA DIPAKE
+
+[[vm]]
+cpu_kind = "shared"
+cpus = 1
+memory_mb = 256 # <- INI DIGANTI JADI 256
