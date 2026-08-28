@@ -94,30 +94,28 @@ def kirim_status_lengkap():
     
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
     
-    posisi_txt = "TIDAK ADA POSISI"
-    posisi_detail = ""
+    status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
+    emoji_status = "🔴" if status_txt=="PAUSE" else "🟢"
+    
+    msg = f"""<b>    SAFANA 09_04_2025</b>
+
+{emoji_status} {status_txt} | Mode: {mode}
+Harga: ${price:.2f} | Grid: ${jarak:.2f}
+Saldo: ${usdt:.2f} | Butuh: ${hitung_butuh_modal(price, hitung_qty_aman(price)):.2f}
+Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
+    
     if len(data_open) > 0:
-        posisi_txt = f"{len(data_open)} Grid"
-        posisi_detail = "\n\n📌 <b>DETAIL POSISI</b>\n"
-        posisi_detail += "<code>" # <--- BIKIN MONOSPACE BIAR RAPI
-        posisi_detail += "No   |  BUY     |   TP    \n"
-        posisi_detail += "-----|--------------------|-------\n"
+        msg += "\n\nDETAIL POSISI\n"
+        msg += "<code>"
+        msg += "--------------------\n" # <--- GARIS ATAS
+        msg += "No |    BUY    |    TP\n"
+        msg += "--------------------\n" # <--- GARIS BAWAH HEADER
         no = 1
         for d in data_open:
             tp = d['price'] + jarak
-            posisi_detail += f"{no:2}. | ${d['price']:8.2f} | ${tp:8.2f}\n" # <--- RAPI RATA KAN
-            no += 1
-        posisi_detail += "</code>"
+            msg += f"{no:2}.| ${d['price']:8.2f}| ${tp:8.2f}\n"
+        msg += "</code>" # <--- UDAH GA ADA GARIS LAGI DI SINI
             
-    butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
-    status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
-    emoji = "🔴" if status_txt=="PAUSE" else "🟢"
-    
-    msg = f"""📊 <b>SAFANA 09_04_2025</b>
-{emoji} <b>{status_txt}</b> | Mode: <b>{mode}</b>
-💰 <b>Harga:</b> ${price:.2f} | <b>Grid:</b> ${jarak:.2f}
-💵 <b>Saldo:</b> ${usdt:.2f} | <b>Butuh:</b> ${butuh:.2f}
-📦 <b>Posisi:</b> {posisi_txt} | <b>BTC:</b> {btc:.8f}{posisi_detail}""" # <--- TEMPLATE BARU
     notif_penting(msg)
 
 def cek_command_telegram():
