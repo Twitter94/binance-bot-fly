@@ -278,13 +278,21 @@ def format_qty(qty):
 
 def hitung_qty_aman(harga):
     step = BINANCE_RULES['step_size']
-    min_qty = BINANCE_RULES['min_qty'] # 0.00001
+    min_notional = BINANCE_RULES['min_notional'] # 5.0
     
-    qty = max(min_qty, 5.0 / harga) # <500rb = modal 5. >=500rb = 0.00001
+    qty = 5.0 / harga # target modal 5 usdt
     
-    # Bulatkan ke bawah biar lolos step_size binance
-    qty = math.floor(qty / step) * step
-    return f"{qty:.8f}".rstrip('0').rstrip('.')
+    # PAKSA NAIK SAMPAI LOLOS MIN NOTIONAL
+    while True:
+        qty_str = format_qty(qty)
+        nilai = harga * float(qty_str)
+        if nilai >= min_notional + 0.01: # +0.01 buat pengaman
+            break
+        qty += step # tambahin 1 step
+        if qty > 0.01: # safety biar ga infinite
+            break
+            
+    return qty_str
 
 def hitung_butuh_modal(price, qty): 
     fee = get_binance_fee()
