@@ -92,15 +92,16 @@ def kirim_status_lengkap():
     jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
     mode = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
 
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc") # 1. ganti asc -> desc
+    # FIX: AMBIL DARI PALING ATAS BIAR TP NYA BENER
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
 
     posisi_txt = "TIDAK ADA POSISI"
     tp_txt = ""
     if len(data_open) > 0:
-        harga_buy = data_open[0]['price'] # ngambil paling atas
+        harga_buy = data_open[0]['price'] # grid paling atas
         tp = harga_buy + jarak
-        posisi_txt = f"{len(data_open)} Grid" # 2. ganti jadi dinamis
-        tp_txt = f"\n\n📌 POSISI\n{len(data_open)} Grid | TP: ${tp:.2f}"
+        posisi_txt = f"{len(data_open)} Grid" # FIX: DINAMIS
+        tp_txt = f"\n\n📌 POSISI\n{len(data_open)} Grid | TP: ${tp:.2f}" # FIX: DINAMIS
 
     butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
     status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
@@ -487,21 +488,25 @@ def cek_sell_instan_darurat(price):
 def sync_3_sumber():
     global LAST_SYNC_CICILAN
     sekarang = time.time()
-    if sekarang - LAST_SYNC_CICILAN < 3:
+    if sekarang - LAST_SYNC_CICILAN < 60: # FIX: DARI 3 JADI 60 DETIK
         return
     LAST_SYNC_CICILAN = sekarang
     log_only("SYNC CICILAN: Ambil 10 order terbaru")
+
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     data_json = load_and_clear_json()
     _, btc_total = get_all_balance()
+
     if len(data_json) > 0:
         notif_penting(f"Ada {len(data_json)} order di JSON. Pindahin ke DB...")
     for p in data_json:
         sb_insert(p)
+
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
     db_dict = {str(d['binance_order_id']): d for d in data_db if 'binance_order_id' in d}
     count_tambah = 0
     count_hapus = 0
+
     if btc_total > 0.00001 and len(data_db) == 0:
         log_only(f"DARURAT: Ada BTC {btc_total:.8f} tapi DB kosong. Scan 50 order terakhir...")
         data_scan = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 50})
@@ -515,7 +520,7 @@ def sync_3_sumber():
                     sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
                     notif_penting(f"RECOVERY DARURAT: Ketemu BUY di {harga:.2f}")
                     count_tambah += 1
-                    # break # <- HAPUS INI BIAR SCAN SEMUA
+
     data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 10})
     if isinstance(data_binance, list):
         for o in data_binance:
@@ -526,7 +531,7 @@ def sync_3_sumber():
                 fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
                 sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
                 count_tambah += 1
-                notif_penting(f"➕ TAMBAH: Ketemu BUY baru di {harga:.2f}") # <- UDAH GUE GANTI JADI notif_penting
+                notif_penting(f"➕ TAMBAH: Ketemu BUY baru di {harga:.2f}")
             elif order_id in db_dict:
                 try:
                     cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
@@ -541,6 +546,7 @@ def sync_3_sumber():
                         log_only(f"HAPUS: Order {db_dict[order_id]['price']:.2f} sudah CANCEL di Binance")
                 except Exception as e:
                     log_only(f"SKIP CEK TP: Order {order_id} error {repr(e)}")
+
     if count_tambah > 0:
         notif_penting(f"RECOVERY: +{count_tambah} order baru")
     if count_hapus > 0:
@@ -700,7 +706,7 @@ async def main():
     
     harga_sekarang = get_price()
     saldo_usdt, saldo_btc = get_all_balance()
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V11.63.40 FIX</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V11.63.41 FIX</b>\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     
     kirim_keyboard()
     cek_sell_instan_darurat(harga_sekarang)
