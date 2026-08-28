@@ -91,18 +91,33 @@ def kirim_status_lengkap():
     price = get_price()
     jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
     mode = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc")
+    
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
+    
     posisi_txt = "TIDAK ADA POSISI"
-    tp_txt = ""
+    posisi_detail = ""
     if len(data_open) > 0:
-        harga_buy = data_open[0]['price']
-        tp = harga_buy + jarak
-        posisi_txt = f"{len(data_open)} Grid" # <--- INI DIUBAH
-        tp_txt = f"\n\n📌 POSISI\n{len(data_open)} Grid | TP: ${tp:.2f}" # <--- INI DIUBAH
+        posisi_txt = f"{len(data_open)} Grid"
+        posisi_detail = "\n\n📌 <b>DETAIL POSISI</b>\n"
+        posisi_detail += "<code>" # <--- BIKIN MONOSPACE BIAR RAPI
+        posisi_detail += "No   |  BUY     |   TP    \n"
+        posisi_detail += "-----|--------------------|-------\n"
+        no = 1
+        for d in data_open:
+            tp = d['price'] + jarak
+            posisi_detail += f"{no:2}. | ${d['price']:8.2f} | ${tp:8.2f}\n" # <--- RAPI RATA KAN
+            no += 1
+        posisi_detail += "</code>"
+            
     butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
     status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
     emoji = "🔴" if status_txt=="PAUSE" else "🟢"
-    msg = f"📊 SAFANA 09_04_2025\n{emoji} {status_txt} | Mode: {mode}\nHarga: ${price:.2f} | Grid: ${jarak:.2f}\nSaldo: ${usdt:.2f} | Modal Butuh: ${butuh:.2f}\nPosisi: {posisi_txt} | BTC: {btc:.8f}{tp_txt}"
+    
+    msg = f"""📊 <b>SAFANA 09_04_2025</b>
+{emoji} <b>{status_txt}</b> | Mode: <b>{mode}</b>
+💰 <b>Harga:</b> ${price:.2f} | <b>Grid:</b> ${jarak:.2f}
+💵 <b>Saldo:</b> ${usdt:.2f} | <b>Butuh:</b> ${butuh:.2f}
+📦 <b>Posisi:</b> {posisi_txt} | <b>BTC:</b> {btc:.8f}{posisi_detail}""" # <--- TEMPLATE BARU
     notif_penting(msg)
 
 def cek_command_telegram():
