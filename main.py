@@ -595,15 +595,15 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 notif_penting(f"✅ <b>SALDO SUDAH CUKUP</b>\nUSDT: {usdt:.2f}\nLanjut Trading...")
                 NOTIF_FLAGS["saldo_kurang"]=False
             if PERLU_REENTRY: 
-    notif_penting(f"✅ <b>RE-ENTRY BERHASIL</b>\nGrid sudah ketutup di {price_grid:.2f}")
-    PERLU_REENTRY = False
+               notif_penting(f"✅ <b>RE-ENTRY BERHASIL</b>\nGrid sudah ketutup di {price_grid:.2f}")
+               PERLU_REENTRY = False
 
-nilai_beli = price_grid * float(qty) # <- TAMBAH 3 BARIS INI
-if nilai_beli < BINANCE_RULES['min_notional']:
-    log_only(f"❌ GAGAL BUY: Nilai {nilai_beli:.2f} < Min 5 USDT. Qty: {qty}")
-    return
+            nilai_beli = price_grid * float(qty) # <- TAMBAH 3 BARIS INI
+            if nilai_beli < BINANCE_RULES['min_notional']:
+               log_only(f"❌ GAGAL BUY: Nilai {nilai_beli:.2f} < Min 5 USDT. Qty: {qty}")
+               return
 
-res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
+            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
             if 'orderId' not in res: 
                 notif_penting(f"❌ BUY GAGAL KE BINANCE: {res}")
                 return
@@ -751,7 +751,7 @@ async def main():
                             continue
             
             price = get_price()
-            if price == 0: 
+            if price == get_price()
                 await asyncio.sleep(10)
                 continue
                 
