@@ -280,18 +280,22 @@ def hitung_qty_aman(harga):
     min_qty = BINANCE_RULES['min_qty']
     step = BINANCE_RULES['step_size']
     
+    # 1. Hitung qty minimal biar pas 5.0 USDT
     qty_dari_usdt = min_notional / harga
     qty = max(min_qty, qty_dari_usdt)
     
-    qty_str = format_qty(qty) # "0.00007000"
+    # 2. Format ke step binance
+    qty_str = format_qty(qty) 
     nilai = harga * float(qty_str)
     
-    # Kalau masih kurang dari 5.01, tambahin 1 step biar aman
-    while nilai < min_notional + 0.01:
+    # 3. RUMUS 5.6: Cukup lewat 5.0 aja, jangan +0.01
+    # Tambah 1 step MAX 2x doang biar ga kelamaan
+    i = 0
+    while nilai < min_notional and i < 2:
         qty += step
         qty_str = format_qty(qty)
         nilai = harga * float(qty_str)
-        if qty > 0.1: break # safety
+        i += 1
         
     return qty_str
 
