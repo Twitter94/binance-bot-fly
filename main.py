@@ -97,8 +97,8 @@ def kirim_status_lengkap():
     if len(data_open) > 0:
         harga_buy = data_open[0]['price']
         tp = harga_buy + jarak
-        posisi_txt = f"1 Grid"
-        tp_txt = f"\n\n📌 POSISI\n1. BUY ${harga_buy:.2f} -> TP ${tp:.2f}"
+        posisi_txt = f"{len(data_open)} Grid" # <--- INI DIUBAH
+        tp_txt = f"\n\n📌 POSISI\n{len(data_open)} Grid | TP: ${tp:.2f}" # <--- INI DIUBAH
     butuh = hitung_butuh_modal(price, hitung_qty_aman(price))
     status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
     emoji = "🔴" if status_txt=="PAUSE" else "🟢"
