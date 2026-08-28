@@ -199,12 +199,13 @@ def signed_request(method, endpoint, params=None):
         url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
         headers = {'X-MBX-APIKEY': BINANCE_API_KEY}
         r = requests.request(method, url, headers=headers, timeout=10)
+        data = r.json()
         if r.status_code!= 200:
-            log_only(f"❌ BINANCE ERROR {r.status_code}\n{r.text}")
+            notif_penting(f"❌ BINANCE ERROR {r.status_code}\n<code>{data}</code>") # <--- INI YG DIGANTI
             return {}
-        return r.json()
+        return data
     except Exception as e:
-        log_only(f"❌ SIGNED_REQUEST CRASH\n{repr(e)}")
+        notif_penting(f"❌ SIGNED_REQUEST CRASH\n<code>{repr(e)}</code>") # <--- INI JUGA
         return {}
 
 def get_price():
