@@ -276,27 +276,21 @@ def format_qty(qty):
     return f"{qty:.8f}".rstrip('0').rstrip('.')
 
 def hitung_qty_aman(harga):
-    min_notional = BINANCE_RULES['min_notional'] # 5.0
-    min_qty = BINANCE_RULES['min_qty']
     step = BINANCE_RULES['step_size']
+    min_notional = BINANCE_RULES['min_notional'] # 5.0
     
-    # 1. Hitung qty minimal biar pas 5.0 USDT
-    qty_dari_usdt = min_notional / harga
-    qty = max(min_qty, qty_dari_usdt)
+    qty = 5.0 / harga # target modal 5 usdt
     
-    # 2. Format ke step binance
-    qty_str = format_qty(qty) 
-    nilai = harga * float(qty_str)
-    
-    # 3. RUMUS 5.6: Cukup lewat 5.0 aja, jangan +0.01
-    # Tambah 1 step MAX 2x doang biar ga kelamaan
-    i = 0
-    while nilai < min_notional and i < 2:
-        qty += step
+    # PAKSA NAIK SAMPAI LOLOS MIN NOTIONAL
+    while True:
         qty_str = format_qty(qty)
         nilai = harga * float(qty_str)
-        i += 1
-        
+        if nilai >= min_notional + 0.01: # +0.01 buat pengaman
+            break
+        qty += step # tambahin 1 step
+        if qty > 0.01: # safety biar ga infinite
+            break
+            
     return qty_str
 
 def hitung_butuh_modal(price, qty):
