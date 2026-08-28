@@ -128,15 +128,17 @@ def cek_command_telegram():
         chat_id = str(last_update['message']['chat']['id'])
         if chat_id!= TELE_CHAT_ID: 
             return
+            
         global NOTIF_MODE
         if text == "ganti mode": 
             NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"
             txt = "🔊 MODE NORMAL AKTIF" if NOTIF_MODE == "NORMAL" else "🔇 MODE SILENT AKTIF"
             log_only(txt)
-            requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
         elif text == "status": 
             kirim_status_lengkap()
-            requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
+            
+        # HAPUS UPDATE WAJIB DI AKHIR
+        requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
     except: 
         pass
 
@@ -189,9 +191,11 @@ def cek_tabel_supabase():
 def bersihin_sampah():
     tujuh_hari_lalu = int(time.time()) - (7 * 24 * 3600)
     try:
-        requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?status=neq.OPEN&time=lt.{tujuh_hari_lalu}", headers=SB_HEADERS, timeout=5)
-    except:
-        pass
+        r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?status=neq.OPEN&time=lt.{tujuh_hari_lalu}", headers=SB_HEADERS, timeout=5)
+        if r.status_code == 204:
+            log_only("🧹 BERSIHIN SAMPAH SUKSES")
+    except Exception as e:
+        log_only(f"❌ GAGAL BERSIHIN SAMPAH: {repr(e)}")
     gc.collect()
 
 def sb_delete(order_id):
@@ -226,8 +230,9 @@ def get_price():
         r.raise_for_status()
         return float(r.json()['price'])
     except:
+        log_only("❌ GAGAL GET PRICE. RETRY 10 DETIK")
         time.sleep(10)
-        return 0
+        return get_price() # <- Retry sampe dapet, jangan return 0
 
 def sb_select(filters=""):
     try:
