@@ -142,10 +142,10 @@ def cek_command_telegram():
         pass
 
 def recovery_sync(): 
-    log_only("🔄 MENJALANKAN RECOVERY SYNC")
+    log_only("🔄 MENJALANKAN RECOVERY SYNC") # DARI notif_penting -> log_only
     sync_3_sumber()
     bersihin_sampah()
-    log_only("✅ RECOVERY SELESAI")
+    log_only("✅ RECOVERY SELESAI") # DARI notif_penting -> log_only
 
 def save_to_json(data):
     try:
@@ -513,7 +513,7 @@ def sync_3_sumber():
     data_json = load_and_clear_json()
     _, btc_total = get_all_balance()
     if len(data_json) > 0: 
-        notif_penting(f"Ada {len(data_json)} order di JSON. Pindahin ke DB...")
+        log_only(f"Ada {len(data_json)} order di JSON. Pindahin ke DB...") # <- ganti notif_penting jadi log_only
     for p in data_json: 
         sb_insert(p)
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY")
@@ -560,10 +560,10 @@ def sync_3_sumber():
                 except Exception as e: 
                     log_only(f"SKIP CEK TP: Order {order_id} error {repr(e)}")
     if count_tambah > 0: 
-        notif_penting(f"RECOVERY: +{count_tambah} order baru")
+       notif_penting(f"RECOVERY: +{count_tambah} order baru") # <- ini tetep bunyi kalau ada
     if count_hapus > 0: 
-        notif_penting(f"CLEAN: -{count_hapus} order TP/Cancel")
-    log_only("Sync Selesai")
+       notif_penting(f"CLEAN: -{count_hapus} order TP/Cancel") # <- ini tetep bunyi kalau ada
+    log_only("Sync Selesai") # <- ini diem
 
 def cek_order_binance_sudah_ada(price_target): 
     data = signed_request("GET", "/api/v3/openOrders", {"symbol":SYMBOL})
