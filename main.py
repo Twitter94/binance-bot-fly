@@ -25,7 +25,6 @@ for v in ["API_KEY", "API_SECRET", "SUPA_URL", "SUPA_KEY", "TELE_TOKEN", "TELE_C
 
 SYMBOL = "BTCUSDT"
 LOOP_SEC = 3
-BUFFER_PERCEN = 0.5
 TABEL = "orders"
 RECOVERY_INTERVAL = 3600
 RE_ENTRY_MODE = True
@@ -312,13 +311,13 @@ def hitung_qty_aman(harga):
     return qty_str
 
 def hitung_butuh_modal(price, qty):
-    fee = get_binance_fee() # 0.001 = 0.1%
+    fee = get_binance_fee() # Ambil fee asli dari Binance
     modal = price * float(qty)
     fee_buy = modal * fee
     fee_sell = modal * fee
     total_fee = fee_buy + fee_sell
 
-    buffer = modal * (BUFFER_PERCEN / 100) # <--- PAKAI VARIABEL BARU
+    buffer = modal * (fee * 5) # <- BUFFER = 5x FEE BINANCE
 
     return modal + total_fee + buffer
 
