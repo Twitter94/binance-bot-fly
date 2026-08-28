@@ -751,18 +751,14 @@ async def main():
                             continue
             
             price = get_price()
-            if price == get_price()
-                await asyncio.sleep(10)
-                continue
                 
             signal_buy, grid_buy = cek_signal_buy(price)
             signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
             
             if signal_buy: 
-                place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
+               place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
             if signal_sell: 
-                place_order_real("SELL", grid_sell, hitung_qty_aman(grid_sell), order_data, is_top)
-            
+               place_order_real("SELL", grid_sell, hitung_qty_aman(grid_sell), order_data, is_top)
             if NOTIF_FLAGS["error"] == True: 
                 notif_penting(f"✅ <b>BOT SUDAH NORMAL KEMBALI</b>\n<b>Error terakhir:</b> <code>{NOTIF_FLAGS['critical_msg']}</code>\n<b>Waktu Pulih:</b> {datetime.now(WIB).strftime('%H:%M:%S')}")
                 NOTIF_FLAGS["error"]=False
