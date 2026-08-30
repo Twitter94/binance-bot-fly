@@ -251,14 +251,15 @@ def get_price():
         time.sleep(10)
         return get_price()
 
-def sb_select(filters=""):
+def sb_select(filters="", pakai_filter_mode=True): # TAMBAH INI
     try:
-        mode_sekarang = "PAPER" if STATE["paper_mode"] else "RILL" # TAMBAH INI
-        if filters != "":
-            filters += f"&mode=eq.{mode_sekarang}" # TAMBAH INI
-        else:
-            filters = f"mode=eq.{mode_sekarang}" # TAMBAH INI
-            
+        if pakai_filter_mode: # <-- CUMA KASIH FILTER KALAU TRUE
+            mode_sekarang = "PAPER" if STATE["paper_mode"] else "RILL"
+            if filters!= "":
+                filters += f"&mode=eq.{mode_sekarang}"
+            else:
+                filters = f"mode=eq.{mode_sekarang}"
+
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
         if r.status_code!= 200: return []
         data = r.json()
@@ -374,17 +375,21 @@ def cek_signal_sell(price):
     update_atr_manager()
     if ATR_MANAGER["jarak"] is None: return False, 0, None, False
     jarak = ATR_MANAGER["jarak"]
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc") # AMBIL SEMUA URUT DARI BAWAH
+
+    # INI KUNCINYA: JANGAN PAKE FILTER MODE
+    # Jadi RILL cuma cek order RILL. PAPER cuma cek order PAPER
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True)
 
     if len(data_open) > 0:
         for order_data in data_open: # CEK 1 PER 1 DARI YG PALING BAWAH
             harga_beli = order_data['price']
             if price >= harga_beli + jarak:
-                data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
+                # ini juga harus pisah
+                data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1", pakai_filter_mode=True)
                 is_top_grid = False
                 if len(data_tertinggi) > 0 and data_tertinggi[0]['id'] == order_data['id']:
                     is_top_grid = True
-                return True, price, order_data, is_top_grid # TP GRID PERTAMA YG KESENTUH
+                return True, price, order_data, is_top_grid
 
     return False, 0, None, False
 
