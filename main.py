@@ -82,7 +82,14 @@ def send_telegram(msg):
         pass
 
 def kirim_keyboard():
-    keyboard = {"keyboard": [[{"text": "STATUS"}], [{"text": "PAKSA PAPER"}, {"text": "PAKSA RILL"}]], "resize_keyboard": True, "one_time_keyboard": False}
+    keyboard = {
+        "keyboard": [
+            [{"text": "STATUS"}], 
+            [{"text": "MODE"}, {"text": "JANGAN SENTUH"}]
+        ], 
+        "resize_keyboard": True, 
+        "one_time_keyboard": False
+    }
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
@@ -131,23 +138,28 @@ def cek_command_telegram():
         r = requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates", timeout=3).json()
         if 'result' not in r or len(r['result']) == 0: return
         last_update = r['result'][-1]
-        text = last_update['message'].get('text', '').lower()
+        text = last_update['message'].get('text', '')
         chat_id = str(last_update['message']['chat']['id'])
         if chat_id!= TELE_CHAT_ID: return
         global NOTIF_MODE
-        if text == "ganti mode":
+        
+        # TOMBOL 1: STATUS
+        if text == "STATUS": 
+            kirim_status_lengkap()
+            
+        # TOMBOL 2: MODE -> AUTO TOGGLE NORMAL/SILENT
+        elif text == "MODE":
             NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"
-            txt = "🔊 MODE NORMAL AKTIF" if NOTIF_MODE == "NORMAL" else "🔇 MODE SILENT AKTIF"
-            log_only(txt)
-        elif text == "status": kirim_status_lengkap()
-        elif text == "paksa paper":
-            STATE["paper_mode"] = True
+            txt = "🔊 MODE: NORMAL" if NOTIF_MODE == "NORMAL" else "🔇 MODE: SILENT"
+            notif_penting(f"{txt} AKTIF")
+            
+        # TOMBOL 3: JANGAN SENTUH -> AUTO TOGGLE RILL/PAPER
+        elif text == "JANGAN SENTUH":
+            STATE["paper_mode"] = False if STATE["paper_mode"] == True else True
             save_state()
-            notif_penting(f"🧪 DIPAKSA KE MODE: PAPER")
-        elif text == "paksa rill":
-            STATE["paper_mode"] = False
-            save_state()
-            notif_penting(f"💰 DIPAKSA KE MODE: RILL")
+            txt = "💰 RILL" if STATE["paper_mode"] == False else "🧪 PAPER"
+            notif_penting(f"JANGAN SENTUH: {txt}")
+            
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
     except: pass
 
