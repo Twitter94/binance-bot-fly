@@ -386,8 +386,9 @@ def cek_sell_instan_darurat(price):
         log_only(f"MODE 2A CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
         if nilai_jual < butuh_min: log_only(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
         elif price > harga_beli_asli:
-            try: res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
-            if 'orderId' in res: profit = (price - harga_beli_asli) * float(qty_str); notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty_str} @ {price:.2f}\nProfit: {profit:.4f} USDT")
+            try:
+                res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
+                if 'orderId' in res: profit = (price - harga_beli_asli) * float(qty_str); notif_penting(f"🚨 MODE 2A SELL PROFIT\nJual {qty_str} @ {price:.2f}\nProfit: {profit:.4f} USDT")
             except Exception as e: log_only(f"GAGAL MODE 2A SELL: {repr(e)}")
     elif len(data_db) > 0:
         if harga_buy_pertama > 0 and price > harga_buy_pertama:
@@ -396,10 +397,11 @@ def cek_sell_instan_darurat(price):
             if nilai_jual < butuh_min: log_only(f"🛑 MODE 1 DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
             else:
                 log_only(f"🚨 MODE 1: HARGA DIATAS BUY PERTAMA {harga_buy_pertama:.2f}. EKSEKUSI SELL DARURAT PROFIT")
-                try: res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
-                if 'orderId' in res:
-                    for d in data_db: sb_delete(d['id'])
-                    profit = (price - harga_buy_pertama) * float(qty_str); notif_penting(f"✅ MODE 1 SUKSES\nJual {qty_str} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
+                try:
+                    res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
+                    if 'orderId' in res:
+                        for d in data_db: sb_delete(d['id'])
+                        profit = (price - harga_buy_pertama) * float(qty_str); notif_penting(f"✅ MODE 1 SUKSES\nJual {qty_str} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
                 except Exception as e: log_only(f"GAGAL MODE 1 SELL: {repr(e)}")
         else: log_only(f"🛑 MODE 1 DITAHAN: Harga {price:.2f} < Buy Pertama {harga_buy_pertama:.2f}")
 
