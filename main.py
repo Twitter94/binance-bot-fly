@@ -344,22 +344,24 @@ def cek_signal_buy(price):
     
     return False, 0
 
-
 def cek_signal_sell(price):
     update_atr_manager()
     if ATR_MANAGER["jarak"] is None: return False, 0, None, False
     jarak = ATR_MANAGER["jarak"]
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc&limit=1")
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc") # AMBIL SEMUA URUT DARI BAWAH
+
     if len(data_open) > 0:
-        order_data = data_open[0]
-        harga_beli = order_data['price']
-        if price >= harga_beli + jarak:
-            data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
-            is_top_grid = False
-            if len(data_tertinggi) > 0 and data_tertinggi[0]['id'] == order_data['id']:
-                is_top_grid = True
-            return True, price, order_data, is_top_grid
+        for order_data in data_open: # CEK 1 PER 1 DARI YG PALING BAWAH
+            harga_beli = order_data['price']
+            if price >= harga_beli + jarak:
+                data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
+                is_top_grid = False
+                if len(data_tertinggi) > 0 and data_tertinggi[0]['id'] == order_data['id']:
+                    is_top_grid = True
+                return True, price, order_data, is_top_grid # TP GRID PERTAMA YG KESENTUH
+
     return False, 0, None, False
+
 
 def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
