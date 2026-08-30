@@ -344,6 +344,7 @@ def cek_signal_buy(price):
     
     return False, 0
 
+
 def cek_signal_sell(price):
     update_atr_manager()
     if ATR_MANAGER["jarak"] is None: return False, 0, None, False
