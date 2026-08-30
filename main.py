@@ -55,7 +55,7 @@ NOTIF_FLAGS = {"error": False, "saldo_kurang": False, "critical_msg": ""}
 NOTIF_SENT = {"buy": None, "sell": None}
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
-STATE = {"paper_mode": True, "paper_usdt": 10000.0, "paper_btc": 0.0}
+STATE = {"paper_mode": True, "paper_usdt": 100.0, "paper_btc": 0.0}
 
 def log_only(msg):
     try:
