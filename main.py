@@ -380,8 +380,9 @@ def cek_sell_instan_darurat(price):
                     if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0: harga_beli_asli = float(o['fills'][0]['price']); qty_asli = float(o['executedQty']); break
                 except: continue
         if harga_beli_asli > 0:
-            insert_res = sb_insert({"price":harga_beli_asli, "qty":qty_asli, "side":"BUY", "status":"OPEN", "binance_order_id": "RECOVERY_"+str(int(time.time())), "fee": 0})
-            if len(insert_res) > 0: log_only(f"✅ MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal"); return
+           recovery_id = int(time.time()) # ID ANGKA BIAR LOLOS DB
+           insert_res = sb_insert({"price":harga_beli_asli, "qty":qty_asli, "side":"BUY", "status":"OPEN", "binance_order_id": recovery_id, "fee": 0})
+           if len(insert_res) > 0: log_only(f"✅ MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal"); return
         qty_str = format_qty(btc); nilai_jual = price * float(qty_str); butuh_min = hitung_butuh_modal(price, qty_str)
         log_only(f"MODE 2A CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
         if nilai_jual < butuh_min: log_only(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
@@ -489,11 +490,12 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             if nilai_beli < BINANCE_RULES['min_notional']: log_only(f"❌ GAGAL BUY: Nilai {nilai_beli:.2f} < Min 5 USDT. Qty: {qty}"); return
 
             if STATE["paper_mode"]:
-                STATE["paper_usdt"] -= nilai_beli
-                STATE["paper_btc"] += float(qty)
-                save_state()
-                res = {"orderId": f"PAPER_{int(time.time())}", "executedQty": qty, "fills": [{"commission": "0", "commissionAsset": "USDT", "price": str(price_grid)}]}
-                notif_penting(f"🧪 [PAPER] BUY TERISI\nHarga: {price_grid:.2f}\nQty: {qty}\nSisa USDT: {STATE['paper_usdt']:.2f}")
+               STATE["paper_usdt"] -= nilai_beli
+               STATE["paper_btc"] += float(qty)
+               save_state()
+               paper_id = int(time.time()) # ID ANGKA BIAR LOLOS DB
+               res = {"orderId": paper_id, "executedQty": qty, "fills": [{"commission": "0", "commissionAsset": "USDT", "price": str(price_grid)}]}
+               notif_penting(f"🧪 [PAPER] BUY TERISI\nHarga: {price_grid:.2f}\nQty: {qty}\nID: {paper_id}\nSisa USDT: {STATE['paper_usdt']:.2f}")
             else:
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
 
