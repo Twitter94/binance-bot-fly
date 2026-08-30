@@ -114,7 +114,7 @@ def kirim_status_lengkap():
     jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
     mode = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc") # UDAH OTOMATIS KE FILTER
     status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
     emoji_status = "🔴" if status_txt=="PAUSE" else "🟢"
     msg = f"""<b> SAFANA 09_04_2025</b>
@@ -124,7 +124,7 @@ Harga: ${price:.2f} | Grid: ${jarak:.2f}
 Saldo: ${usdt:.2f} | Butuh: ${hitung_butuh_modal(price, hitung_qty_aman(price)):.2f}
 Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
     if len(data_open) > 0:
-        msg += "\n\nDETAIL POSISI\n<code>--------------------\nNo | BUY | TP\n--------------------\n"
+        msg += f"\n\nDETAIL POSISI {mode_uang}\n<code>--------------------\nNo | BUY | TP\n--------------------\n" # TAMBAH LABEL
         no = 1
         for d in data_open:
             tp = d['price'] + jarak
@@ -246,6 +246,12 @@ def get_price():
 
 def sb_select(filters=""):
     try:
+        mode_sekarang = "PAPER" if STATE["paper_mode"] else "RILL" # TAMBAH INI
+        if filters != "":
+            filters += f"&mode=eq.{mode_sekarang}" # TAMBAH INI
+        else:
+            filters = f"mode=eq.{mode_sekarang}" # TAMBAH INI
+            
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
         if r.status_code!= 200: return []
         data = r.json()
@@ -254,6 +260,7 @@ def sb_select(filters=""):
 
 def sb_insert(data):
     try:
+        data['mode'] = "PAPER" if STATE["paper_mode"] else "RILL" # TAMBAH INI
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
         if r.status_code not in [200, 201]:
             notif_penting(f"❌ SB_INSERT GAGAL {r.status_code}: {r.text}")
