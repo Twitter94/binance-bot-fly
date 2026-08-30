@@ -51,7 +51,7 @@ BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 ATR_MANAGER = {"jarak": None, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
 WIB = timezone(timedelta(hours=7))
-NOTIF_FLAGS = {"error": False, "saldo_kurang": False, "critical_msg": ""}
+NOTIF_FLAGS = {"error": False, "saldo_kurang_rill": False, "saldo_kurang_paper": False, "critical_msg": ""}
 NOTIF_SENT = {"buy": None, "sell": None}
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
@@ -114,17 +114,20 @@ def kirim_status_lengkap():
     jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else 0
     mode = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc") # UDAH OTOMATIS KE FILTER
-    status_txt = "PAUSE" if NOTIF_FLAGS["saldo_kurang"] else "JALAN"
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
+
+    flag_key = "saldo_kurang_paper" if STATE["paper_mode"] else "saldo_kurang_rill" # TAMBAH BARIS INI
+    status_txt = "PAUSE" if NOTIF_FLAGS[flag_key] else "JALAN" # GANTI BARIS INI
     emoji_status = "🔴" if status_txt=="PAUSE" else "🟢"
-    msg = f"""<b> SAFANA 09_04_2025</b>
+
+    msg = f"""<b> SAFANA V12.06</b>
 
 {emoji_status} {status_txt} | {mode} | {mode_uang}
 Harga: ${price:.2f} | Grid: ${jarak:.2f}
 Saldo: ${usdt:.2f} | Butuh: ${hitung_butuh_modal(price, hitung_qty_aman(price)):.2f}
 Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
     if len(data_open) > 0:
-        msg += f"\n\nDETAIL POSISI {mode_uang}\n<code>--------------------\nNo | BUY | TP\n--------------------\n" # TAMBAH LABEL
+        msg += f"\n\nDETAIL POSISI {mode_uang}\n<code>--------------------\nNo | BUY | TP\n--------------------\n"
         no = 1
         for d in data_open:
             tp = d['price'] + jarak
@@ -138,34 +141,32 @@ def cek_command_telegram():
         r = requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates", timeout=3).json()
         if 'result' not in r or len(r['result']) == 0: return
         last_update = r['result'][-1]
-        text = last_update['message'].get('text', '').upper() # <-- DI UPPERCASE BIAR GAMPANG
+        text = last_update['message'].get('text', '').upper()
         chat_id = str(last_update['message']['chat']['id'])
         if chat_id!= TELE_CHAT_ID: return
         global NOTIF_MODE
-        
-        # TOMBOL 1: STATUS
-        if text == "STATUS": 
+
+        if text == "STATUS":
             kirim_status_lengkap()
-            
-        # TOMBOL 2: MODE -> AUTO TOGGLE NORMAL/SILENT
+
         elif text == "MODE":
             NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"
             txt = "🔊 MODE: NORMAL" if NOTIF_MODE == "NORMAL" else "🔇 MODE: SILENT"
             notif_penting(f"{txt} AKTIF")
 
-        # PERINTAH KETIK 1: RILL
-        elif text == "RILL":
+        elif text == "RILL": # GANTI BLOK INI
             STATE["paper_mode"] = False
+            NOTIF_FLAGS["saldo_kurang_rill"] = False
             save_state()
             notif_penting("💰 <b>GANTI MODE: RILL</b>\nBot sekarang trading pake uang beneran. Hati-hati!")
 
-        # PERINTAH KETIK 2: PAPER
-        elif text == "PAPER":
+        elif text == "PAPER": # GANTI BLOK INI
             STATE["paper_mode"] = True
+            NOTIF_FLAGS["saldo_kurang_paper"] = False
             save_state()
             notif_penting("🧪 <b>GANTI MODE: PAPER</b>\nBot sekarang trading pake saldo simulasi")
-            
-        requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1") # ini biar update_id ke reset
+
+        requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1")
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
     except: pass
 
@@ -317,9 +318,14 @@ def hitung_qty_aman(harga):
     return qty_str
 
 def hitung_butuh_modal(price, qty):
-    fee = get_binance_fee(); modal = price * float(qty); fee_buy = modal * fee; fee_sell = modal * fee; total_fee = fee_buy + fee_sell; buffer = modal * (fee * 5)
-    return modal + total_fee + buffer
-
+    fee = get_binance_fee() # 0.001
+    modal = price * float(qty)
+    fee_buy = modal * fee
+    fee_sell = modal * fee
+    buffer = modal * (fee * 5)
+    total_butuh = modal + fee_buy + fee_sell + buffer
+    return total_butuh
+    
 def get_atr(symbol, period=ATR_PERIOD, interval=ATR_TIMEFRAME):
     try:
         r = requests.get(f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=10)
@@ -506,7 +512,6 @@ def sync_3_sumber():
     count_tambah = 0
     count_hapus = 0
 
-    # RECOVERY DARURAT CUMA UNTUK RILL
     if not STATE["paper_mode"] and btc_total > 0.00001 and len(data_db) == 0:
         log_only(f"{mode_txt} DARURAT: Ada BTC {btc_total:.8f} tapi DB kosong. Scan 50 order terakhir...")
         data_scan = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 50})
@@ -516,13 +521,12 @@ def sync_3_sumber():
                     harga = float(o['fills'][0]['price'])
                     qty = float(o['executedQty'])
                     order_id = str(o['orderId'])
-                    fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+                    fee_buy = sum([float(f['commission']) for f in o['fills']]) # GANTI: HAPUS * price
                     sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
                     notif_penting(f"{mode_txt} RECOVERY DARURAT: Ketemu BUY di {harga:.2f}")
                     count_tambah += 1
                     break
 
-    # SYNC DARI BINANCE CUMA UNTUK RILL
     if not STATE["paper_mode"]:
         data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 10})
         if isinstance(data_binance, list):
@@ -531,7 +535,7 @@ def sync_3_sumber():
                 if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0 and order_id not in db_dict:
                     harga = float(o['fills'][0]['price'])
                     qty = float(o['executedQty'])
-                    fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
+                    fee_buy = sum([float(f['commission']) for f in o['fills']]) # GANTI: HAPUS * price
                     sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
                     count_tambah += 1
                     log_only(f"{mode_txt} TAMBAH: Ketemu BUY baru di {harga:.2f}")
@@ -562,6 +566,9 @@ def cek_order_binance_sudah_ada(price_target):
 
 def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
     global NOTIF_FLAGS, NOTIF_SENT, BUYING_LOCK, PERLU_REENTRY, LAST_REENTRY_TIME
+    mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]" # TAMBAH BARIS INI
+    flag_key = "saldo_kurang_paper" if STATE["paper_mode"] else "saldo_kurang_rill" # TAMBAH BARIS INI
+
     if side=="BUY":
         if price_grid in BUYING_LOCK: return
         if is_price_exist(price_grid) or cek_order_binance_sudah_ada(price_grid): return
@@ -569,11 +576,14 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         try:
             usdt, btc = get_all_balance()
             butuh = hitung_butuh_modal(price_grid, qty)
+
+            # GANTI BLOK CEK SALDO JADI INI
             if usdt < butuh:
-                if not NOTIF_FLAGS["saldo_kurang"]: notif_penting(f"💰 <b>SALDO KURANG</b>\nUSDT: {usdt:.2f} | Butuh: {butuh:.2f}")
-                NOTIF_FLAGS["saldo_kurang"]=True
+                if not NOTIF_FLAGS[flag_key]: notif_penting(f"💰 <b>SALDO KURANG {mode_txt}</b>\nUSDT: {usdt:.2f} | Butuh: {butuh:.2f}")
+                NOTIF_FLAGS[flag_key]=True
                 return
-            if NOTIF_FLAGS["saldo_kurang"] == True: notif_penting(f"✅ <b>SALDO SUDAH CUKUP</b>\nUSDT: {usdt:.2f}\nLanjut Trading..."); NOTIF_FLAGS["saldo_kurang"]=False
+            if NOTIF_FLAGS[flag_key] == True: notif_penting(f"✅ <b>SALDO SUDAH CUKUP {mode_txt}</b>\nUSDT: {usdt:.2f}\nLanjut Trading..."); NOTIF_FLAGS[flag_key]=False
+
             if PERLU_REENTRY: notif_penting(f"✅ <b>RE-ENTRY BERHASIL</b>\nGrid sudah ketutup di {price_grid:.2f}"); PERLU_REENTRY = False
 
             nilai_beli = price_grid * float(qty)
@@ -581,17 +591,19 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 
             fee_buy = 0
             order_id = int(time.time())
-            if STATE["paper_mode"]:
+
+            if STATE["paper_mode"]: # BLOK PAPER
                STATE["paper_usdt"] -= nilai_beli
                STATE["paper_btc"] += float(qty)
                save_state()
-               fee_buy = nilai_beli * 0.001 # FEE PAPER 0.1%
-            else:
+               fee_buy = nilai_beli * 0.001
+               order_id = f"PAPER_{order_id}"
+            else: # BLOK RILL
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
                 if 'orderId' not in res: notif_penting(f"❌ BUY GAGAL KE BINANCE: {res}"); return
                 order_id = res['orderId']
                 qty = res['executedQty']
-                fee_buy = sum([float(f['commission']) * float(f['price']) for f in res.get('fills',[])])
+                fee_buy = sum([float(f['commission']) for f in res.get('fills',[])]) # GANTI: HAPUS * price
 
             cek_double = sb_select(f"binance_order_id=eq.{order_id}")
             if len(cek_double) > 0: return
@@ -599,9 +611,8 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             if len(insert_res) == 0: save_to_json({"price":price_grid, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy})
 
             usdt, _ = get_all_balance()
-            mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
-            if NOTIF_SENT["buy"]!= price_grid: 
-                notif_penting(f"{mode_txt} 🟢 <b>BUY TERISI</b>\nHarga: {price_grid:.2f}\nQty: {qty}\nID: {order_id}\nFee: {fee_buy:.4f} USDT\nButuh: {butuh:.2f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}") 
+            if NOTIF_SENT["buy"]!= price_grid:
+                notif_penting(f"{mode_txt} 🟢 <b>BUY TERISI</b>\nHarga: {price_grid:.2f}\nQty: {qty}\nID: {order_id}\nFee: {fee_buy:.4f} USDT\nButuh: {butuh:.2f}\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
                 NOTIF_SENT["buy"] = price_grid; NOTIF_SENT["sell"] = None
         except Exception as e: notif_penting(f"❌ ERROR BUY: {repr(e)}")
         finally: BUYING_LOCK.discard(price_grid)
@@ -615,16 +626,17 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 
         fee_sell = 0
         order_id = f"SELL_{int(time.time())}"
-        if STATE["paper_mode"]:
-            STATE["paper_usdt"] += nilai_jual
+
+        if STATE["paper_mode"]: # BLOK PAPER
+            STATE["paper_usdt"] += nilai_jual - (nilai_jual * 0.001)
             STATE["paper_btc"] -= float(qty_db)
             save_state()
-            fee_sell = nilai_jual * 0.001 # FEE PAPER 0.1%
-        else:
+            fee_sell = nilai_jual * 0.001
+        else: # BLOK RILL
             res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_db})
             if 'orderId' not in res: log_only(f"❌ SELL GAGAL: {res}"); return
             order_id = res['orderId']
-            fee_sell = sum([float(f['commission']) * float(f['price']) for f in res.get('fills',[])])
+            fee_sell = sum([float(f['commission']) for f in res.get('fills',[])]) # GANTI: HAPUS * price
 
         harga_beli = order_data['price']
         fee_buy_db = order_data.get('fee', 0)
@@ -635,20 +647,20 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         sb_delete(order_data['id'])
         usdt, _ = get_all_balance()
 
-        mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
-        if NOTIF_SENT["sell"]!= price_grid: 
-            notif_penting(f"{mode_txt} 🔴 <b>SELL TP</b>\nBuy: {harga_beli:.2f}\nSell: {price_grid:.2f}\nQty: {qty_db}\nID: {order_id}\nFee: {fee_sell:.4f} USDT\nProfit: {profit:.4f} USDT\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}") 
+        if NOTIF_SENT["sell"]!= price_grid:
+            notif_penting(f"{mode_txt} 🔴 <b>SELL TP</b>\nBuy: {harga_beli:.2f}\nSell: {price_grid:.2f}\nQty: {qty_db}\nID: {order_id}\nFee: {fee_sell:.4f} USDT\nProfit: {profit:.4f} USDT\nSaldo USDT: {usdt:.2f}\nJarak: {ATR_MANAGER['jarak']:.2f}")
             NOTIF_SENT["sell"] = price_grid; NOTIF_SENT["buy"] = None
-            
-        if NOTIF_FLAGS["saldo_kurang"] == True: notif_penting(f"✅ <b>DAPAT SALDO DARI TP</b>\nSaldo USDT: {usdt:.2f}")
+
+        if NOTIF_FLAGS[flag_key] == True: notif_penting(f"✅ <b>DAPAT SALDO DARI TP {mode_txt}</b>\nSaldo USDT: {usdt:.2f}") # GANTI BARIS INI
         if RE_ENTRY_MODE and is_top_grid:
             if time.time() - LAST_REENTRY_TIME < REENTRY_COOLDOWN: notif_penting(f"⏳ <b>RE-ENTRY DITAHAN</b>\nTunggu {REENTRY_COOLDOWN} detik dulu"); return
             price_reentry = price_grid
             qty_reentry = hitung_qty_aman(price_reentry)
             butuh = hitung_butuh_modal(price_reentry, qty_reentry)
             usdt_cek, _ = get_all_balance()
-            if usdt_cek >= butuh: LAST_REENTRY_TIME = time.time(); notif_penting(f"♻️ <b>RE-ENTRY LANGSUNG</b>\nHarga: {price_reentry:.2f}\nQty: {qty_reentry}\nButuh: {butuh:.2f}"); place_order_real("BUY", price_reentry, qty_reentry)
-            else: PERLU_REENTRY = True; notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
+            if usdt_cek >= butuh: LAST_REENTRY_TIME = time.time(); notif_penting(f"♻️ <b>RE-ENTRY LANGSUNG {mode_txt}</b>\nHarga: {price_reentry:.2f}\nQty: {qty_reentry}\nButuh: {butuh:.2f}"); place_order_real("BUY", price_reentry, qty_reentry)
+            else: PERLU_REENTRY = True; notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA {mode_txt}</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
+
 
 async def main():
     load_state() # LOAD DULU DARI DB
