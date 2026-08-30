@@ -397,11 +397,11 @@ def cek_sell_instan_darurat(price):
     _, btc = get_all_balance()
     if btc < BINANCE_RULES['min_qty']: return
 
-    # INI KUNCI: PAKE FILTER MODE BIAR GAK KECAMPUR
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY", pakai_filter_mode=True)
     data_json = load_and_clear_json()
+    mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]" # PINDAH KE ATAS
 
-    log_only(f"🔍 CEK DARURAT\nBTC: {btc:.8f}\nDB: {len(data_db)}\nJSON: {len(data_json)}\nHarga: {price:.2f}")
+    log_only(f"🔍 CEK DARURAT {mode_txt}\nBTC: {btc:.8f}\nDB: {len(data_db)}\nJSON: {len(data_json)}\nHarga: {price:.2f}")
 
     harga_buy_pertama = 0; harga_buy_terakhir = 0; tp_terakhir = 0
     if len(data_db) > 0:
@@ -422,17 +422,16 @@ def cek_sell_instan_darurat(price):
             qty += step
             if qty > btc + 0.001: log_only("GAGAL MODE 3: Qty mentok safety"); break
 
-        mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
         notif_penting(f"🚨 {mode_txt} <b>MODE 3: HARGA KELEWAT TP</b>\nBUY: {harga_buy_pertama:.2f}\nTP: {tp_terakhir:.2f}\nSekarang: {price:.2f}\nJUAL LGSG: {qty_str} @ {price:.2f}\nDapat: {nilai_jual:.2f} USDT")
 
-        if STATE["paper_mode"]: # PAPER: SIMULASI
+        if STATE["paper_mode"]:
             STATE["paper_usdt"] += nilai_jual - (nilai_jual * 0.001)
             STATE["paper_btc"] -= float(qty_str)
             save_state()
             for d in data_db: sb_delete(d['id'])
             profit = (price - harga_buy_pertama) * float(qty_str)
             notif_penting(f"✅ {mode_txt} MODE 3 SUKSES TP PAKSA\nProfit Kotor: {profit:.4f} USDT")
-        else: # RILL: KE BINANCE
+        else:
             try:
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
                 if 'orderId' in res:
@@ -441,67 +440,65 @@ def cek_sell_instan_darurat(price):
             except Exception as e: log_only(f"GAGAL MODE 3 SELL: {repr(e)}")
         return
 
-    # MODE 2: ADA BTC TAPI DB KOSONG
-    if len(data_db) == 0 and len(data_json) == 0:
-        log_only(f"⚠️ MODE 2: DETEKSI COIN TANPA CATATAN. MENCARI HARGA BELI DI BINANCE...")
-        if not STATE["paper_mode"]: # MODE 2 CUMA JALAN DI RILL
-            data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500}); harga_beli_asli = 0; qty_asli = 0
-            if isinstance(data_binance, list):
-                for o in data_binance:
-                    try:
-                        if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0: harga_beli_asli = float(o['fills'][0]['price']); qty_asli = float(o['executedQty']); break
-                    except: continue
-            if harga_beli_asli > 0:
-               recovery_id = int(time.time())
-               insert_res = sb_insert({"price":harga_beli_asli, "qty":qty_asli, "side":"BUY", "status":"OPEN", "binance_order_id": recovery_id, "fee": 0})
-               if len(insert_res) > 0: log_only(f"✅ MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal"); return
-            qty_str = format_qty(btc); nilai_jual = price * float(qty_str); butuh_min = hitung_butuh_modal(price, qty_str)
-            log_only(f"MODE 2A CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
-            if nilai_jual < butuh_min: log_only(f"🛑 MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
-            elif price > harga_beli_asli:
+    # MODE 2: ADA BTC TAPI DB KOSONG - CUMA UNTUK RILL
+    if not STATE["paper_mode"] and len(data_db) == 0 and len(data_json) == 0:
+        log_only(f"⚠️ {mode_txt} MODE 2: DETEKSI COIN TANPA CATATAN. MENCARI HARGA BELI DI BINANCE...")
+        data_binance = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500}); harga_beli_asli = 0; qty_asli = 0
+        if isinstance(data_binance, list):
+            for o in data_binance:
                 try:
-                    res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
-                    if 'orderId' in res: profit = (price - harga_beli_asli) * float(qty_str); notif_penting(f"🚨 {mode_txt} MODE 2A SELL PROFIT\nJual {qty_str} @ {price:.2f}\nProfit: {profit:.4f} USDT")
-                except Exception as e: log_only(f"GAGAL MODE 2A SELL: {repr(e)}")
+                    if o.get('side') == 'BUY' and o.get('status') == 'FILLED' and o.get('fills') and len(o['fills']) > 0: harga_beli_asli = float(o['fills'][0]['price']); qty_asli = float(o['executedQty']); break
+                except: continue
+        if harga_beli_asli > 0:
+           recovery_id = int(time.time())
+           insert_res = sb_insert({"price":harga_beli_asli, "qty":qty_asli, "side":"BUY", "status":"OPEN", "binance_order_id": recovery_id, "fee": 0})
+           if len(insert_res) > 0: log_only(f"✅ {mode_txt} MODE 2A BERHASIL: Order dicatat ke DB di {harga_beli_asli:.2f}. Lanjut trading normal"); return
+        qty_str = format_qty(btc); nilai_jual = price * float(qty_str); butuh_min = hitung_butuh_modal(price, qty_str)
+        log_only(f"{mode_txt} MODE 2A CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
+        if nilai_jual < butuh_min: log_only(f"🛑 {mode_txt} MODE 2A DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
+        elif price > harga_beli_asli:
+            try:
+                res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
+                if 'orderId' in res: profit = (price - harga_beli_asli) * float(qty_str); notif_penting(f"🚨 {mode_txt} MODE 2A SELL PROFIT\nJual {qty_str} @ {price:.2f}\nProfit: {profit:.4f} USDT")
+            except Exception as e: log_only(f"GAGAL MODE 2A SELL: {repr(e)}")
 
     # MODE 1: ADA ORDER DI DB
     elif len(data_db) > 0:
         if harga_buy_pertama > 0 and price > harga_buy_pertama:
             qty_str = format_qty(float(data_db[0]['qty'])); nilai_jual = price * float(qty_str); butuh_min = hitung_butuh_modal(price, qty_str)
-            log_only(f"MODE 1 CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
-            if nilai_jual < butuh_min: log_only(f"🛑 MODE 1 DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
+            log_only(f"{mode_txt} MODE 1 CEK: Qty={qty_str} | Nilai={nilai_jual:.2f} | Butuh Min={butuh_min:.2f}")
+            if nilai_jual < butuh_min: log_only(f"🛑 {mode_txt} MODE 1 DITAHAN: Nilai {nilai_jual:.2f} < Butuh {butuh_min:.2f}")
             else:
-                mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
                 log_only(f"🚨 {mode_txt} MODE 1: HARGA DIATAS BUY PERTAMA {harga_buy_pertama:.2f}. EKSEKUSI SELL DARURAT PROFIT")
-                if STATE["paper_mode"]: # PAPER
+                if STATE["paper_mode"]:
                     STATE["paper_usdt"] += nilai_jual - (nilai_jual * 0.001)
                     STATE["paper_btc"] -= float(qty_str)
                     save_state()
                     for d in data_db: sb_delete(d['id'])
                     profit = (price - harga_buy_pertama) * float(qty_str)
                     notif_penting(f"✅ {mode_txt} MODE 1 SUKSES\nJual {qty_str} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
-                else: # RILL
+                else:
                     try:
                         res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
                         if 'orderId' in res:
                             for d in data_db: sb_delete(d['id'])
                             profit = (price - harga_buy_pertama) * float(qty_str); notif_penting(f"✅ {mode_txt} MODE 1 SUKSES\nJual {qty_str} @ {price:.2f}\nProfit Kotor: {profit:.4f} USDT")
                     except Exception as e: log_only(f"GAGAL MODE 1 SELL: {repr(e)}")
-        else: log_only(f"🛑 MODE 1 DITAHAN: Harga {price:.2f} < Buy Pertama {harga_buy_pertama:.2f}")
+        else: log_only(f"🛑 {mode_txt} MODE 1 DITAHAN: Harga {price:.2f} < Buy Pertama {harga_buy_pertama:.2f}")
 
 def sync_3_sumber():
     global LAST_SYNC_CICILAN
     sekarang = time.time()
     if sekarang - LAST_SYNC_CICILAN < 3: return
     LAST_SYNC_CICILAN = sekarang
-    log_only("SYNC CICILAN: Ambil 10 order terbaru")
+    mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
+    log_only(f"{mode_txt} SYNC CICILAN: Ambil 10 order terbaru")
 
-    # KUNCI: PAKE FILTER MODE BIAR GAK KECAMPUR
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY", pakai_filter_mode=True)
     data_json = load_and_clear_json()
     _, btc_total = get_all_balance()
 
-    if len(data_json) > 0: log_only(f"Ada {len(data_json)} order di JSON. Pindahin ke DB...")
+    if len(data_json) > 0: log_only(f"{mode_txt} Ada {len(data_json)} order di JSON. Pindahin ke DB...")
     for p in data_json: sb_insert(p)
 
     data_db = sb_select(f"status=eq.OPEN&side=eq.BUY", pakai_filter_mode=True)
@@ -511,7 +508,7 @@ def sync_3_sumber():
 
     # RECOVERY DARURAT CUMA UNTUK RILL
     if not STATE["paper_mode"] and btc_total > 0.00001 and len(data_db) == 0:
-        log_only(f"DARURAT: Ada BTC {btc_total:.8f} tapi DB kosong. Scan 50 order terakhir...")
+        log_only(f"{mode_txt} DARURAT: Ada BTC {btc_total:.8f} tapi DB kosong. Scan 50 order terakhir...")
         data_scan = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 50})
         if isinstance(data_scan, list):
             for o in reversed(data_scan):
@@ -521,7 +518,7 @@ def sync_3_sumber():
                     order_id = str(o['orderId'])
                     fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
                     sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
-                    notif_penting(f"RECOVERY DARURAT: Ketemu BUY di {harga:.2f}")
+                    notif_penting(f"{mode_txt} RECOVERY DARURAT: Ketemu BUY di {harga:.2f}")
                     count_tambah += 1
                     break
 
@@ -537,7 +534,7 @@ def sync_3_sumber():
                     fee_buy = sum([float(f['commission']) * float(f['price']) for f in o['fills']])
                     sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy, "time": int(o['time']/1000)})
                     count_tambah += 1
-                    log_only(f"TAMBAH: Ketemu BUY baru di {harga:.2f}")
+                    log_only(f"{mode_txt} TAMBAH: Ketemu BUY baru di {harga:.2f}")
                 elif order_id in db_dict:
                     try:
                         cek_detail = signed_request("GET", "/api/v3/order", {"symbol":SYMBOL, "orderId": order_id})
@@ -545,16 +542,16 @@ def sync_3_sumber():
                         if cek_detail.get('status') == 'FILLED' and cek_detail.get('side') == 'SELL':
                             sb_delete(db_dict[order_id]['id'])
                             count_hapus += 1
-                            log_only(f"HAPUS: Order {db_dict[order_id]['price']:.2f} sudah TP di Binance")
+                            log_only(f"{mode_txt} HAPUS: Order {db_dict[order_id]['price']:.2f} sudah TP di Binance")
                         elif cek_detail.get('status')!= 'FILLED':
                             sb_delete(db_dict[order_id]['id'])
                             count_hapus += 1
-                            log_only(f"HAPUS: Order {db_dict[order_id]['price']:.2f} sudah CANCEL di Binance")
-                    except Exception as e: log_only(f"SKIP CEK TP: Order {order_id} error {repr(e)}")
+                            log_only(f"{mode_txt} HAPUS: Order {db_dict[order_id]['price']:.2f} sudah CANCEL di Binance")
+                    except Exception as e: log_only(f"{mode_txt} SKIP CEK TP: Order {order_id} error {repr(e)}")
 
-    if count_tambah > 0: notif_penting(f"RECOVERY: +{count_tambah} order baru")
-    if count_hapus > 0: notif_penting(f"CLEAN: -{count_hapus} order TP/Cancel")
-    log_only("Sync Selesai")
+    if count_tambah > 0: notif_penting(f"{mode_txt} RECOVERY: +{count_tambah} order baru")
+    if count_hapus > 0: notif_penting(f"{mode_txt} CLEAN: -{count_hapus} order TP/Cancel")
+    log_only(f"{mode_txt} Sync Selesai")
 
 def cek_order_binance_sudah_ada(price_target):
     data = signed_request("GET", "/api/v3/openOrders", {"symbol":SYMBOL})
