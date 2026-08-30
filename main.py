@@ -84,17 +84,17 @@ def send_telegram(msg):
 def kirim_keyboard():
     keyboard = {
         "keyboard": [
-            [{"text": "STATUS"}], 
-            [{"text": "MODE"}, {"text": "JANGAN SENTUH"}]
+            [{"text": "MODE"}, {"text": "STATUS"}]  # <-- 2 TOMBOL SEJAJAR
         ], 
         "resize_keyboard": True, 
         "one_time_keyboard": False
     }
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
+        requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>\n\nKetik: RILL atau PAPER untuk ganti mode uang", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
     except:
         pass
+
 
 def load_state():
     global STATE
@@ -119,7 +119,7 @@ def kirim_status_lengkap():
     emoji_status = "🔴" if status_txt=="PAUSE" else "🟢"
     msg = f"""<b> SAFANA 09_04_2025</b>
 
-{emoji_status} {status_txt} | Mode: {mode} | Uang: {mode_uang}
+{emoji_status} {status_txt} | {mode} | {mode_uang}
 Harga: ${price:.2f} | Grid: ${jarak:.2f}
 Saldo: ${usdt:.2f} | Butuh: ${hitung_butuh_modal(price, hitung_qty_aman(price)):.2f}
 Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
@@ -138,7 +138,7 @@ def cek_command_telegram():
         r = requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates", timeout=3).json()
         if 'result' not in r or len(r['result']) == 0: return
         last_update = r['result'][-1]
-        text = last_update['message'].get('text', '')
+        text = last_update['message'].get('text', '').upper() # <-- DI UPPERCASE BIAR GAMPANG
         chat_id = str(last_update['message']['chat']['id'])
         if chat_id!= TELE_CHAT_ID: return
         global NOTIF_MODE
@@ -152,16 +152,23 @@ def cek_command_telegram():
             NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"
             txt = "🔊 MODE: NORMAL" if NOTIF_MODE == "NORMAL" else "🔇 MODE: SILENT"
             notif_penting(f"{txt} AKTIF")
-            
-        # TOMBOL 3: JANGAN SENTUH -> AUTO TOGGLE RILL/PAPER
-        elif text == "JANGAN SENTUH":
-            STATE["paper_mode"] = False if STATE["paper_mode"] == True else True
+
+        # PERINTAH KETIK 1: RILL
+        elif text == "RILL":
+            STATE["paper_mode"] = False
             save_state()
-            txt = "💰 RILL" if STATE["paper_mode"] == False else "🧪 PAPER"
-            notif_penting(f"JANGAN SENTUH: {txt}")
+            notif_penting("💰 <b>GANTI MODE: RILL</b>\nBot sekarang trading pake uang beneran. Hati-hati!")
+
+        # PERINTAH KETIK 2: PAPER
+        elif text == "PAPER":
+            STATE["paper_mode"] = True
+            save_state()
+            notif_penting("🧪 <b>GANTI MODE: PAPER</b>\nBot sekarang trading pake saldo simulasi")
             
+        requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1") # ini biar update_id ke reset
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
     except: pass
+
 
 def recovery_sync():
     log_only("🔄 MENJALANKAN RECOVERY SYNC")
