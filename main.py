@@ -582,17 +582,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                     else: PERLU_REENTRY = True; notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
 
 async def main():
-    load_state() # LOAD DULU
-    
-    # AUTO DETECT MODE: KALAU ADA SALDO RILL PAKSA RILL
-    try:
-        usdt_rill, btc_rill = get_all_balance()
-        if usdt_rill > 1 or btc_rill > 0.00001:
-            if STATE["paper_mode"]:
-                STATE["paper_mode"] = False
-                save_state()
-                notif_penting("⚠️ <b>AUTO PAKSA RILL</b>\nDeteksi ada saldo Binance. Mode diganti ke RILL")
-    except: pass
+    load_state() # LOAD DULU DARI DB
     
     notif_penting("1. BOT MULAI")
     global START_TIME, LAST_RECOVERY, PERLU_REENTRY
@@ -616,7 +606,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price(); saldo_usdt, saldo_btc = get_all_balance()
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.04 FINAL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.05 FINAL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     kirim_keyboard()
     cek_sell_instan_darurat(harga_sekarang)
     await asyncio.sleep(3)
@@ -644,7 +634,6 @@ async def main():
                 NOTIF_FLAGS["error"]=True
                 NOTIF_FLAGS["critical_msg"]=error_sekarang
                 notif_penting(f"❌ <b>CRITICAL ERROR</b>\n<code>{error_sekarang}</code>")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
