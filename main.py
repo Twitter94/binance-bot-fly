@@ -584,7 +584,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price(); saldo_usdt, saldo_btc = get_all_balance()
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.03 4PART</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.03 FINAL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     kirim_keyboard()
     cek_sell_instan_darurat(harga_sekarang)
     await asyncio.sleep(3)
@@ -606,8 +606,12 @@ async def main():
             if NOTIF_FLAGS["error"] == True: notif_penting(f"✅ <b>BOT SUDAH NORMAL KEMBALI</b>\n<b>Error terakhir:</b> <code>{NOTIF_FLAGS['critical_msg']}</code>\n<b>Waktu Pulih:</b> {datetime.now(WIB).strftime('%H:%M:%S')}"); NOTIF_FLAGS["error"]=False; NOTIF_FLAGS["critical_msg"]=""
             gc.collect()
             await asyncio.sleep(LOOP_SEC)
-        except Exception as e: error_sekarang = repr(e)
-        if not NOTIF_FLAGS["error"]: NOTIF_FLAGS["error"]=True; NOTIF_FLAGS["critical_msg"]=error_sekarang; notif_penting(f"❌ <b>CRITICAL ERROR</b>\n<code>{error_sekarang}</code>")
+        except Exception as e: 
+            error_sekarang = repr(e)
+            if not NOTIF_FLAGS["error"]: 
+                NOTIF_FLAGS["error"]=True
+                NOTIF_FLAGS["critical_msg"]=error_sekarang
+                notif_penting(f"❌ <b>CRITICAL ERROR</b>\n<code>{error_sekarang}</code>")
 
 if __name__ == "__main__":
     asyncio.run(main())
