@@ -82,7 +82,7 @@ def send_telegram(msg):
         pass
 
 def kirim_keyboard():
-    keyboard = {"keyboard": [[{"text": "GANTI MODE"}, {"text": "STATUS"}], [{"text": "JANGAN SENTUH"}]], "resize_keyboard": True, "one_time_keyboard": False}
+    keyboard = {"keyboard": [[{"text": "STATUS"}], [{"text": "PAKSA PAPER"}, {"text": "PAKSA RILL"}]], "resize_keyboard": True, "one_time_keyboard": False}
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
@@ -140,11 +140,14 @@ def cek_command_telegram():
             txt = "🔊 MODE NORMAL AKTIF" if NOTIF_MODE == "NORMAL" else "🔇 MODE SILENT AKTIF"
             log_only(txt)
         elif text == "status": kirim_status_lengkap()
-        elif text == "jangan sentuh":
-            STATE["paper_mode"] = not STATE["paper_mode"]
+        elif text == "paksa paper":
+            STATE["paper_mode"] = True
             save_state()
-            mode_baru = "PAPER" if STATE["paper_mode"] else "REAL"
-            notif_penting(f"🔄 GANTI KE MODE: {mode_baru}")
+            notif_penting(f"🧪 DIPAKSA KE MODE: PAPER")
+        elif text == "paksa rill":
+            STATE["paper_mode"] = False
+            save_state()
+            notif_penting(f"💰 DIPAKSA KE MODE: RILL")
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
     except: pass
 
@@ -310,24 +313,35 @@ def update_atr_manager():
         notif_penting(f"📊 <b>ATR UPDATE 00:00</b>\nATR: {atr_baru:.2f}\nJarak: {jarak:.2f}")
 
 def is_price_exist(price):
-    jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else MIN_JARAK; toleransi = jarak / 2
-    data = sb_select(f"price=gte.{price-toleransi}&price=lte.{price+toleransi}&side=eq.BUY&status=eq.OPEN")
-    return data[0] if len(data) > 0 else None
+    jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else MIN_JARAK
+    data = sb_select(f"side=eq.BUY&status=eq.OPEN")
+    for d in data:
+        if abs(d['price'] - price) < jarak: # KALAU KURANG DARI JARAK = DITOLAK
+            return d
+    return None
 
 def cek_signal_buy(price):
     global FIRST_BUY_DONE, START_TIME
     update_atr_manager()
     if ATR_MANAGER["jarak"] is None: return False, 0
     jarak = ATR_MANAGER["jarak"]
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
+    
+    # FIRST BUY
     if not FIRST_BUY_DONE and len(data_open) == 0 and time.time() - START_TIME > WAIT_FIRST_BUY:
         FIRST_BUY_DONE = True
         return True, price
+    
+    # BUY SELANJUTNYA: HARUS TURUN >= JARAK DARI GRID TERDEKAT DI ATASNYA
     if len(data_open) > 0:
-        harga_buy_terakhir = data_open[0]['price']
-        if price <= harga_buy_terakhir - jarak:
-            if not is_price_exist(price):
-                return True, price
+        # cari grid terdekat yg di atas harga sekarang
+        grid_diatas = [d for d in data_open if d['price'] > price]
+        if len(grid_diatas) > 0:
+            harga_grid_terdekat = min([d['price'] for d in grid_diatas])
+            if price <= harga_grid_terdekat - jarak:
+                if not is_price_exist(price): # CEK APAKAH SUDAH ADA DI JARAK ITU
+                    return True, price
+    
     return False, 0
 
 def cek_signal_sell(price):
@@ -565,7 +579,18 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                     else: PERLU_REENTRY = True; notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
 
 async def main():
-    load_state() # TAMBAH LOAD STATE
+    load_state() # LOAD DULU
+    
+    # AUTO DETECT MODE: KALAU ADA SALDO RILL PAKSA RILL
+    try:
+        usdt_rill, btc_rill = get_all_balance()
+        if usdt_rill > 1 or btc_rill > 0.00001:
+            if STATE["paper_mode"]:
+                STATE["paper_mode"] = False
+                save_state()
+                notif_penting("⚠️ <b>AUTO PAKSA RILL</b>\nDeteksi ada saldo Binance. Mode diganti ke RILL")
+    except: pass
+    
     notif_penting("1. BOT MULAI")
     global START_TIME, LAST_RECOVERY, PERLU_REENTRY
     START_TIME = time.time()
@@ -588,7 +613,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price(); saldo_usdt, saldo_btc = get_all_balance()
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.03 FINAL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.04 FINAL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     kirim_keyboard()
     cek_sell_instan_darurat(harga_sekarang)
     await asyncio.sleep(3)
@@ -616,6 +641,7 @@ async def main():
                 NOTIF_FLAGS["error"]=True
                 NOTIF_FLAGS["critical_msg"]=error_sekarang
                 notif_penting(f"❌ <b>CRITICAL ERROR</b>\n<code>{error_sekarang}</code>")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
