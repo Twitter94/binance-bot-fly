@@ -703,7 +703,7 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price(); saldo_usdt, saldo_btc = get_all_balance()
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.05 FINAL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.07 FINAL FIX SELL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     kirim_keyboard()
     cek_sell_instan_darurat(harga_sekarang)
     await asyncio.sleep(3)
@@ -712,11 +712,24 @@ async def main():
         try:
             sync_3_sumber(); bersihin_sampah(); cek_command_telegram()
             if time.time() - LAST_RECOVERY > RECOVERY_INTERVAL: recovery_sync(); LAST_RECOVERY = time.time()
+            
+            # ==================== BLOK RE-ENTRY CADANGAN ====================
+            mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
             if PERLU_REENTRY:
                 price_sekarang = get_price()
-                if price_sekarang!= 0: _, btc_cek = get_all_balance()
-                if btc_cek < 0.00001: qty_market = hitung_qty_aman(price_sekarang); usdt_cek, _ = get_all_balance(); butuh = hitung_butuh_modal(price_sekarang, qty_market)
-                if usdt_cek >= butuh: notif_penting(f"🔄 <b>EKSEKUSI RE-ENTRY</b>\nSaldo cukup. Buy di harga market {price_sekarang:.2f}"); place_order_real("BUY", price_sekarang, qty_market); PERLU_REENTRY = False; continue
+                _, btc_cek = get_all_balance()
+                # Cuma jalan kalau BTC udah 0 alias udah ke sell semua
+                if btc_cek < BINANCE_RULES['min_qty']: 
+                    qty_market = hitung_qty_aman(price_sekarang)
+                    usdt_cek, _ = get_all_balance()
+                    butuh = hitung_butuh_modal(price_sekarang, qty_market)
+                    if usdt_cek >= butuh: 
+                        notif_penting(f"🔄 <b>EKSEKUSI RE-ENTRY CADANGAN {mode_txt}</b>\nSaldo cukup. Buy di harga market {price_sekarang:.2f}")
+                        place_order_real("BUY", price_sekarang, qty_market)
+                        PERLU_REENTRY = False
+                        continue # SKIP LOOP 1X BIAR GAK DOUBLE BUY
+            # ==================== AKHIR BLOK RE-ENTRY ====================
+
             price = get_price()
             signal_buy, grid_buy = cek_signal_buy(price)
             signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
