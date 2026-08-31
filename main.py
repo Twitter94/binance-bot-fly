@@ -384,29 +384,28 @@ def cek_signal_sell(price):
         return []
 
     jarak = ATR_MANAGER["jarak"]
-    list_sell = []
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True)
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True) # DARI HARGA PALING RENDAH
 
     if len(data_open) == 0:
         return []
 
-    data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1", pakai_filter_mode=True)
-    id_grid_tertinggi = data_tertinggi[0]['id'] if len(data_tertinggi) > 0 else None
+    # CUMA CEK 1 GRID PALING BAWAH. KALAU TP YA SELL ITU DOANG
+    order_data = data_open[0]
+    harga_beli = float(order_data['price'])
+    tp_harga = harga_beli + jarak
 
-    for order_data in data_open:
-        harga_beli = float(order_data['price']) # TAMBAH FLOAT DISINI
-        tp_harga = harga_beli + jarak
+    if price >= tp_harga:
+        data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1", pakai_filter_mode=True)
+        is_top_grid = (order_data['id'] == data_tertinggi[0]['id']) if len(data_tertinggi) > 0 else False
 
-        if price >= tp_harga:
-            is_top_grid = (order_data['id'] == id_grid_tertinggi)
-            list_sell.append({
-                "order_data": order_data,
-                "harga_sell": price,
-                "is_top_grid": is_top_grid
-            })
-            log_only(f"🎯 KETEMU TP: Buy@{harga_beli:.2f} TP@{tp_harga:.2f} Now@{price:.2f}")
+        log_only(f"🎯 TP KENA: Buy@{harga_beli:.2f} TP@{tp_harga:.2f} Now@{price:.2f}")
+        return [{
+            "order_data": order_data,
+            "harga_sell": price,
+            "is_top_grid": is_top_grid
+        }]
 
-    return list_sell
+    return []
 
 def cek_sell_instan_darurat(price):
     global PERLU_REENTRY, LAST_REENTRY_TIME
@@ -681,11 +680,11 @@ async def main():
             if signal_buy: 
                 place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
 
-            list_sell = cek_signal_sell(price) 
+            list_sell = cek_signal_sell(price)
             if len(list_sell) > 0:
-                notif_penting(f"🎯 {mode_txt} KETEMU {len(list_sell)} GRID TP. EKSEKUSI SELL BORONGAN")
-            
-            for s in list_sell:
+                notif_penting(f"🎯 {mode_txt} TP KENA 1 GRID. EKSEKUSI SELL") # GANTI TEKSNYA
+
+            for s in list_sell: # INI TETEP 1 DOANG KARENA DI ATAS CUMA RETURN 1
                 place_order_real("SELL", s["harga_sell"], hitung_qty_aman(s["harga_sell"]), s["order_data"], s["is_top_grid"])
                 await asyncio.sleep(0.3)
 
