@@ -545,7 +545,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
     mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
     flag_key = "saldo_kurang_paper" if STATE["paper_mode"] else "saldo_kurang_rill"
 
-    # ==================== BLOK BUY ====================
+    # ==================== BLOK 1: BUY ====================
     if side=="BUY":
         if price_grid in BUYING_LOCK: return
         if is_price_exist(price_grid) or cek_order_binance_sudah_ada(price_grid): return
@@ -554,7 +554,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             usdt, btc = get_all_balance()
             butuh = hitung_butuh_modal(price_grid, qty)
 
-            # SATPAM BUY: CEK SALDO + BUFFER
+            # SATPAM BUY: CEK SALDO + BUFFER 5X FEE
             if usdt < butuh:
                 if not NOTIF_FLAGS[flag_key]: 
                     notif_penting(f"💰 <b>SALDO KURANG {mode_txt}</b>\nUSDT: {usdt:.2f} | Butuh: {butuh:.2f}")
@@ -569,9 +569,9 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 PERLU_REENTRY = False
 
             nilai_beli = price_grid * float(qty)
-            # SATPAM BINANCE 1: MIN NOTIONAL
+            # SATPAM BINANCE 1: MIN NOTIONAL 5 USDT
             if nilai_beli < BINANCE_RULES['min_notional']: 
-                log_only(f"❌ GAGAL BUY: Nilai {nilai_beli:.2f} < Min 5 USDT. Qty: {qty}")
+                log_only(f"❌ GAGAL BUY {mode_txt}: Nilai {nilai_beli:.2f} < Min 5 USDT. Qty: {qty}")
                 return
 
             fee_buy = 0
@@ -608,12 +608,12 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         finally: 
             BUYING_LOCK.discard(price_grid)
 
-    # ==================== BLOK SELL ====================
+    # ==================== BLOK 2: SELL ====================
     if side=="SELL":
         qty_db = format_qty(float(order_data['qty']))
         nilai_jual = price_grid * float(qty_db)
 
-        # SATPAM BINANCE 1: CEK QTY
+        # SATPAM BINANCE 1: CEK QTY 0.00001
         if float(qty_db) < BINANCE_RULES['min_qty']:
             notif_penting(f"❌ GAGAL SELL {mode_txt}: Qty {qty_db} < Min {BINANCE_RULES['min_qty']}")
             return
@@ -661,7 +661,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         if NOTIF_FLAGS[flag_key] == True: 
             notif_penting(f"✅ <b>DAPAT SALDO DARI TP {mode_txt}</b>\nSaldo USDT: {usdt:.2f}")
         
-        # RE-ENTRY
+        # ==================== BLOK 3: RE-ENTRY ====================
         if RE_ENTRY_MODE and is_top_grid:
             if time.time() - LAST_REENTRY_TIME < REENTRY_COOLDOWN: 
                 notif_penting(f"⏳ <b>RE-ENTRY DITAHAN {mode_txt}</b>\nTunggu {REENTRY_COOLDOWN} detik dulu")
@@ -677,7 +677,6 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             else: 
                 PERLU_REENTRY = True
                 notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA {mode_txt}</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
-
 
 async def main():
     load_state() # LOAD DULU DARI DB
