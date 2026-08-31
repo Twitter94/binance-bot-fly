@@ -44,6 +44,7 @@ START_TIME = time.time()
 LAST_RECOVERY = 0
 LAST_SYNC_CICILAN = 0
 BUYING_LOCK = set()
+SELL_LOCK = set()
 PERLU_REENTRY = False
 LAST_REENTRY_TIME = 0
 BASE_URL = "https://api.binance.com"
