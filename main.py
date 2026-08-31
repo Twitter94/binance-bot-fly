@@ -378,26 +378,46 @@ def cek_signal_buy(price):
     return False, 0
 
 def cek_signal_sell(price):
+    """
+    CEK SEMUA GRID YANG UDAH TP SEKALIGUS
+    Return: list order yang harus di SELL
+    """
     update_atr_manager()
-    if ATR_MANAGER["jarak"] is None: return False, 0, None, False
-    jarak = ATR_MANAGER["jarak"]
+    if ATR_MANAGER["jarak"] is None:
+        return [] # KOSONG = GAK ADA YG SELL
 
-    # INI KUNCINYA: JANGAN PAKE FILTER MODE
-    # Jadi RILL cuma cek order RILL. PAPER cuma cek order PAPER
+    jarak = ATR_MANAGER["jarak"]
+    list_sell = [] # TAMPUNG SEMUA YG TP
+
+    # INI KUNCINYA: PAKE FILTER MODE BIAR GAK KETUKER PAPER/RILL
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True)
 
-    if len(data_open) > 0:
-        for order_data in data_open: # CEK 1 PER 1 DARI YG PALING BAWAH
-            harga_beli = order_data['price']
-            if price >= harga_beli + jarak:
-                # ini juga harus pisah
-                data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1", pakai_filter_mode=True)
-                is_top_grid = False
-                if len(data_tertinggi) > 0 and data_tertinggi[0]['id'] == order_data['id']:
-                    is_top_grid = True
-                return True, price, order_data, is_top_grid
+    if len(data_open) == 0:
+        return []
 
-    return False, 0, None, False
+    # CARI GRID PALING ATAS BUAT CEK RE-ENTRY NANTI
+    data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1", pakai_filter_mode=True)
+    id_grid_tertinggi = data_tertinggi[0]['id'] if len(data_tertinggi) > 0 else None
+
+    # CEK 1 PER 1 SEMUA ORDER. GAK PAKE RETURN DITENGAH
+    for order_data in data_open:
+        harga_beli = order_data['price']
+        tp_harga = harga_beli + jarak
+
+        # KALAU HARGA UDAH NYENTUH TP NYA
+        if price >= tp_harga:
+            is_top_grid = (order_data['id'] == id_grid_tertinggi)
+
+            # MASUKIN KE LIST SELL
+            list_sell.append({
+                "order_data": order_data,
+                "harga_sell": price, # SELL DI HARGA MARKET SEKARANG
+                "is_top_grid": is_top_grid
+            })
+            log_only(f"🎯 KETEMU TP: Buy@{harga_beli:.2f} TP@{tp_harga:.2f} Now@{price:.2f}")
+
+    return list_sell # BALIKIN LIST. BISA 0, 1, ATAU 5 ORDER SEKALIGUS
+
 
 def cek_sell_instan_darurat(price):
     global PERLU_REENTRY, LAST_REENTRY_TIME
@@ -691,7 +711,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 async def main():
     load_state() # LOAD DULU DARI DB
     
-    notif_penting("1. BOT MULAI")
+    notif_penting("1. BOT MULAI V13.9 FINAL FIX")
     global START_TIME, LAST_RECOVERY, PERLU_REENTRY
     START_TIME = time.time()
     notif_penting("2. CEK TABEL")
@@ -713,11 +733,15 @@ async def main():
     LAST_RECOVERY = time.time()
     harga_sekarang = get_price(); saldo_usdt, saldo_btc = get_all_balance()
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
-    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V12.07 FINAL FIX SELL</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
+    notif_penting(f"6. BOT SIAP\n🤖 <b>Bot V13.9 FINAL FIX SELL BORONGAN</b>\n<b>Mode:</b> {mode_uang}\n<b>Harga:</b> {harga_sekarang}\n<b>Jarak ATR:</b> {ATR_MANAGER['jarak']:.2f}\n<b>Saldo USDT:</b> {saldo_usdt:.2f}\n<b>Saldo BTC:</b> {saldo_btc:.8f}")
     kirim_keyboard()
-    cek_sell_instan_darurat(harga_sekarang)
+    
+    # CEK DARURAT DI AWAL
+    cek_sell_instan_darurat(harga_sekarang) 
+    
     await asyncio.sleep(3)
     notif_penting("7. MASUK LOOP UTAMA")
+
     while True:
         try:
             sync_3_sumber(); bersihin_sampah(); cek_command_telegram()
@@ -728,7 +752,6 @@ async def main():
             if PERLU_REENTRY:
                 price_sekarang = get_price()
                 _, btc_cek = get_all_balance()
-                # Cuma jalan kalau BTC udah 0 alias udah ke sell semua
                 if btc_cek < BINANCE_RULES['min_qty']: 
                     qty_market = hitung_qty_aman(price_sekarang)
                     usdt_cek, _ = get_all_balance()
@@ -737,17 +760,36 @@ async def main():
                         notif_penting(f"🔄 <b>EKSEKUSI RE-ENTRY CADANGAN {mode_txt}</b>\nSaldo cukup. Buy di harga market {price_sekarang:.2f}")
                         place_order_real("BUY", price_sekarang, qty_market)
                         PERLU_REENTRY = False
-                        continue # SKIP LOOP 1X BIAR GAK DOUBLE BUY
+                        continue
             # ==================== AKHIR BLOK RE-ENTRY ====================
 
             price = get_price()
+            log_only(f"🔍 CEK DARURAT: Harga={price:.2f} | Jarak={ATR_MANAGER['jarak']:.2f}") # LOG BARU
+
+            # 1. CEK BUY NORMAL
             signal_buy, grid_buy = cek_signal_buy(price)
-            signal_sell, grid_sell, order_data, is_top = cek_signal_sell(price)
-            if signal_buy: place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
-            if signal_sell: place_order_real("SELL", grid_sell, hitung_qty_aman(grid_sell), order_data, is_top)
-            if NOTIF_FLAGS["error"] == True: notif_penting(f"✅ <b>BOT SUDAH NORMAL KEMBALI</b>\n<b>Error terakhir:</b> <code>{NOTIF_FLAGS['critical_msg']}</code>\n<b>Waktu Pulih:</b> {datetime.now(WIB).strftime('%H:%M:%S')}"); NOTIF_FLAGS["error"]=False; NOTIF_FLAGS["critical_msg"]=""
+            if signal_buy: 
+                place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
+
+            # 2. CEK SELL NORMAL BORONGAN - INI YG BARU
+            list_sell = cek_signal_sell(price) 
+            if len(list_sell) > 0:
+                notif_penting(f"🎯 {mode_txt} KETEMU {len(list_sell)} GRID TP. EKSEKUSI SELL BORONGAN")
+            
+            for s in list_sell: # LOOP SEMUA YG TP
+                place_order_real("SELL", s["harga_sell"], hitung_qty_aman(s["harga_sell"]), s["order_data"], s["is_top_grid"])
+                await asyncio.sleep(0.3) # JEDA 0.3 DETIK ANTI BAN BINANCE
+
+            # 3. CEK SELL DARURAT MODE 3 SEBAGAI BAN SEREP
+            cek_sell_instan_darurat(price)
+
+            if NOTIF_FLAGS["error"] == True: 
+                notif_penting(f"✅ <b>BOT SUDAH NORMAL KEMBALI</b>\n<b>Error terakhir:</b> <code>{NOTIF_FLAGS['critical_msg']}</code>\n<b>Waktu Pulih:</b> {datetime.now(WIB).strftime('%H:%M:%S')}"); 
+                NOTIF_FLAGS["error"]=False; NOTIF_FLAGS["critical_msg"]=""
+            
             gc.collect()
             await asyncio.sleep(LOOP_SEC)
+            
         except Exception as e: 
             error_sekarang = repr(e)
             if not NOTIF_FLAGS["error"]: 
