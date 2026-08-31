@@ -116,8 +116,8 @@ def kirim_status_lengkap():
     mode_uang = "🧪 PAPER" if STATE["paper_mode"] else "💰 REAL"
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
 
-    flag_key = "saldo_kurang_paper" if STATE["paper_mode"] else "saldo_kurang_rill" # TAMBAH BARIS INI
-    status_txt = "PAUSE" if NOTIF_FLAGS[flag_key] else "JALAN" # GANTI BARIS INI
+    flag_key = "saldo_kurang_paper" if STATE["paper_mode"] else "saldo_kurang_rill"
+    status_txt = "PAUSE" if NOTIF_FLAGS[flag_key] else "JALAN"
     emoji_status = "🔴" if status_txt=="PAUSE" else "🟢"
 
     msg = f"""<b> SAFANA 09_04_2025</b>
@@ -130,8 +130,9 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
         msg += f"\n\nDETAIL POSISI {mode_uang}\n<code>--------------------\nNo | BUY | TP\n--------------------\n"
         no = 1
         for d in data_open:
-            tp = d['price'] + jarak
-            msg += f"{no:2}.| ${d['price']:8.2f}| ${tp:8.2f}\n"
+            harga_buy = float(d['price']) # FIX: KASIH FLOAT
+            tp = harga_buy + jarak # FIX: PAKE VARIABEL BARU
+            msg += f"{no:2}.| ${harga_buy:8.2f}| ${tp:8.2f}\n" # FIX: PAKE VARIABEL BARU
             no+=1
         msg += "</code>"
     notif_penting(msg)
@@ -643,8 +644,8 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             order_id = res['orderId']
             fee_sell = sum([float(f['commission']) for f in res.get('fills',[])])
 
-        harga_beli = order_data['price']
-        fee_buy_db = order_data.get('fee', 0)
+        harga_beli = float(order_data['price']) # FIX: KASIH FLOAT
+        fee_buy_db = float(order_data.get('fee', 0)) # FIX: KASIH FLOAT
         qty_fill = float(qty_str)
         profit = (price_grid * qty_fill) - (harga_beli * qty_fill) - fee_buy_db - fee_sell
         DAILY_STATS["profit_usdt"] += profit
