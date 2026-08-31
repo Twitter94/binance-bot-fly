@@ -269,7 +269,10 @@ def sb_select(filters="", pakai_filter_mode=True): # TAMBAH INI
 
 def sb_insert(data):
     try:
-        data['mode'] = "PAPER" if STATE["paper_mode"] else "RILL" # TAMBAH INI
+        data['mode'] = "PAPER" if STATE["paper_mode"] else "RILL"
+        data['price'] = float(data['price']) # PAKSA FLOAT
+        data['qty'] = float(data['qty']) # PAKSA FLOAT
+        data['fee'] = float(data.get('fee', 0)) # PAKSA FLOAT
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
         if r.status_code not in [200, 201]:
             notif_penting(f"❌ SB_INSERT GAGAL {r.status_code}: {r.text}")
@@ -429,32 +432,32 @@ def cek_sell_instan_darurat(price):
 
     if len(data_db) == 0: return
 
-    harga_buy_terakhir = max([d['price'] for d in data_db])
+    harga_buy_terakhir = max([float(d['price']) for d in data_db]) # TAMBAH FLOAT
     tp_terakhir = harga_buy_terakhir + ATR_MANAGER['jarak']
     grid = ATR_MANAGER['jarak']
 
-    # MODE 3: HARGA KELEWAT TP TERAKHIR + 0.5 JARAK
     if price > tp_terakhir + (grid * 0.5):
-        qty_str = format_qty(btc) # SELL ALL PAKE TOTAL BTC
+        qty_str = format_qty(btc)
         nilai_jual = price * float(qty_str)
         notif_penting(f"🚨 {mode_txt} <b>MODE 3: HARGA KELEWAT TP</b>\nTP: {tp_terakhir:.2f}\nSekarang: {price:.2f}\nJUAL PAKSA: {qty_str} @ {price:.2f}\nDapat: {nilai_jual:.2f} USDT")
+
+        total_modal = sum([float(d['price']) * float(d['qty']) for d in data_db]) # FIX: KASIH FLOAT SEMUA
 
         if STATE["paper_mode"]:
             STATE["paper_usdt"] += nilai_jual - (nilai_jual * 0.001)
             STATE["paper_btc"] = 0
             save_state()
             for d in data_db: sb_delete(d['id'])
-            profit = nilai_jual - sum([d['price'] * d['qty'] for d in data_db])
+            profit = nilai_jual - total_modal # PAKE VARIABEL BARU
             notif_penting(f"✅ {mode_txt} MODE 3 SUKSES TP PAKSA\nProfit Kotor: {profit:.4f} USDT")
         else:
             res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
             if 'orderId' in res:
                 for d in data_db: sb_delete(d['id'])
-                profit = nilai_jual - sum([d['price'] * d['qty'] for d in data_db])
+                profit = nilai_jual - total_modal # PAKE VARIABEL BARU
                 notif_penting(f"✅ {mode_txt} MODE 3 SUKSES TP PAKSA\nProfit Kotor: {profit:.4f} USDT")
             else: return
 
-        # RE-ENTRY INSTAN MODE 3
         if RE_ENTRY_MODE:
             qty_reentry = hitung_qty_aman(price)
             butuh = hitung_butuh_modal(price, qty_reentry)
