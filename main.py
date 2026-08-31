@@ -221,10 +221,17 @@ def bersihin_sampah():
     gc.collect()
 
 def sb_delete(order_id):
-    try:
-        r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=5)
-        return r.status_code == 204
-    except: return False
+    for i in range(5): # COBA 5X
+        try:
+            r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=10)
+            if r.status_code == 204:
+                log_only(f"✅ HAPUS DB SUKSES: {order_id}")
+                return True
+        except Exception as e: 
+            log_only(f"⚠️ HAPUS DB GAGAL {i+1}/5: {repr(e)}")
+        time.sleep(1)
+    notif_penting(f"❌ FATAL: GAGAL HAPUS {order_id} 5X")
+    return False
 
 def signed_request(method, endpoint, params=None):
     if params is None: params = {}
@@ -580,11 +587,11 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         except Exception as e: notif_penting(f"❌ ERROR BUY {mode_txt}: {repr(e)}")
         finally: BUYING_LOCK.discard(price_grid)
 
-    # ==================== BLOK 2: SELL + ANTI SPAM V3 ====================
+    # ==================== BLOK 2: SELL + ANTI SPAM V4 FINAL ====================
     if side=="SELL":
         order_id_db = order_data['id']
-        if order_id_db in SELL_LOCK: return # UDAH DISELL SKIP
-        SELL_LOCK.add(order_id_db) # KUNCI DULU
+        if order_id_db in SELL_LOCK: return # UDAH KEJUAL SKIP
+        SELL_LOCK.add(order_id_db) # KUNCI DULUAN
         
         try:
             _, btc_total = get_all_balance()
@@ -604,7 +611,10 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 if 'orderId' not in res: return
                 fee_sell = sum([float(f['commission']) for f in res.get('fills',[])])
 
-            sb_delete(order_data['id']) # HAPUS DULUAN BIAR GA SPAM
+            # HAPUS DULUAN. KALAU GAGAL YA UDAH BALIK
+            if not sb_delete(order_data['id']): 
+                SELL_LOCK.discard(order_id_db)
+                return
             
             harga_beli = float(order_data['price']); fee_buy_db = float(order_data.get('fee', 0)); qty_fill = float(qty_str)
             profit = (price_grid * qty_fill) - (harga_beli * qty_fill) - fee_buy_db - fee_sell
@@ -619,7 +629,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 else: PERLU_REENTRY = True; notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA {mode_txt}</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
         finally:
             SELL_LOCK.discard(order_id_db) # BUKA KUNCI WAJIB
-
+            
 async def main():
     load_state()
     
