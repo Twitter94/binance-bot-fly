@@ -587,7 +587,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         except Exception as e: notif_penting(f"❌ ERROR BUY {mode_txt}: {repr(e)}")
         finally: BUYING_LOCK.discard(price_grid)
 
-    # ==================== BLOK 2: SELL + ANTI SPAM V4 FINAL ====================
+    # ==================== BLOK 2: SELL + ANTI SPAM V5 PERMANEN ====================
     if side=="SELL":
         order_id_db = order_data['id']
         if order_id_db in SELL_LOCK: return # UDAH KEJUAL SKIP
@@ -611,10 +611,10 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 if 'orderId' not in res: return
                 fee_sell = sum([float(f['commission']) for f in res.get('fills',[])])
 
-            # HAPUS DULUAN. KALAU GAGAL YA UDAH BALIK
+            # HAPUS DULUAN. KALAU GAGAL JANGAN BUKA KUNCI
             if not sb_delete(order_data['id']): 
-                SELL_LOCK.discard(order_id_db)
-                return
+                notif_penting(f"❌ FATAL: Order {order_id_db} GAGAL DIHAPUS. BOT SKIP PERMANEN")
+                return # JANGAN DISCARD. BIARIN KELOCK SELAMANYA
             
             harga_beli = float(order_data['price']); fee_buy_db = float(order_data.get('fee', 0)); qty_fill = float(qty_str)
             profit = (price_grid * qty_fill) - (harga_beli * qty_fill) - fee_buy_db - fee_sell
@@ -628,7 +628,10 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 if usdt_cek >= butuh: LAST_REENTRY_TIME = time.time(); notif_penting(f"♻️ <b>RE-ENTRY INSTAN {mode_txt}</b>\nHarga: {price_grid:.2f}"); place_order_real("BUY", price_grid, qty_reentry)
                 else: PERLU_REENTRY = True; notif_penting(f"⚠️ <b>RE-ENTRY DITUNDA {mode_txt}</b>\nSaldo: {usdt_cek:.2f} | Butuh: {butuh:.2f}")
         finally:
-            SELL_LOCK.discard(order_id_db) # BUKA KUNCI WAJIB
+            # CUMA BUKA KUNCI KALAU HAPUS DB SUKSES
+            if order_id_db not in SELL_LOCK: pass # udah kehapus di atas
+            else: SELL_LOCK.discard(order_id_db) # BUKA KUNCI WAJIB
+                
             
 async def main():
     load_state()
