@@ -350,9 +350,9 @@ def update_atr_manager():
 
 def is_price_exist(price):
     jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else MIN_JARAK
-    data = sb_select(f"side=eq.BUY&status=eq.OPEN", pakai_filter_mode=True) # TAMBAH INI
+    data = sb_select(f"side=eq.BUY&status=eq.OPEN", pakai_filter_mode=True)
     for d in data:
-        if abs(d['price'] - price) < jarak: 
+        if abs(float(d['price']) - price) < jarak: # TAMBAH FLOAT DISINI
             return d
     return None
 
@@ -362,64 +362,49 @@ def cek_signal_buy(price):
     if ATR_MANAGER["jarak"] is None: return False, 0
     jarak = ATR_MANAGER["jarak"]
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc")
-    
-    # FIRST BUY
+
     if not FIRST_BUY_DONE and len(data_open) == 0 and time.time() - START_TIME > WAIT_FIRST_BUY:
         FIRST_BUY_DONE = True
         return True, price
-    
-    # BUY SELANJUTNYA: HARUS TURUN >= JARAK DARI GRID TERDEKAT DI ATASNYA
+
     if len(data_open) > 0:
-        # cari grid terdekat yg di atas harga sekarang
-        grid_diatas = [d for d in data_open if d['price'] > price]
+        grid_diatas = [d for d in data_open if float(d['price']) > price] # TAMBAH FLOAT
         if len(grid_diatas) > 0:
-            harga_grid_terdekat = min([d['price'] for d in grid_diatas])
+            harga_grid_terdekat = min([float(d['price']) for d in grid_diatas]) # TAMBAH FLOAT
             if price <= harga_grid_terdekat - jarak:
-                if not is_price_exist(price): # CEK APAKAH SUDAH ADA DI JARAK ITU
+                if not is_price_exist(price):
                     return True, price
-    
     return False, 0
 
 def cek_signal_sell(price):
-    """
-    CEK SEMUA GRID YANG UDAH TP SEKALIGUS
-    Return: list order yang harus di SELL
-    """
     update_atr_manager()
     if ATR_MANAGER["jarak"] is None:
-        return [] # KOSONG = GAK ADA YG SELL
+        return []
 
     jarak = ATR_MANAGER["jarak"]
-    list_sell = [] # TAMPUNG SEMUA YG TP
-
-    # INI KUNCINYA: PAKE FILTER MODE BIAR GAK KETUKER PAPER/RILL
+    list_sell = []
     data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True)
 
     if len(data_open) == 0:
         return []
 
-    # CARI GRID PALING ATAS BUAT CEK RE-ENTRY NANTI
     data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1", pakai_filter_mode=True)
     id_grid_tertinggi = data_tertinggi[0]['id'] if len(data_tertinggi) > 0 else None
 
-    # CEK 1 PER 1 SEMUA ORDER. GAK PAKE RETURN DITENGAH
     for order_data in data_open:
-        harga_beli = order_data['price']
+        harga_beli = float(order_data['price']) # TAMBAH FLOAT DISINI
         tp_harga = harga_beli + jarak
 
-        # KALAU HARGA UDAH NYENTUH TP NYA
         if price >= tp_harga:
             is_top_grid = (order_data['id'] == id_grid_tertinggi)
-
-            # MASUKIN KE LIST SELL
             list_sell.append({
                 "order_data": order_data,
-                "harga_sell": price, # SELL DI HARGA MARKET SEKARANG
+                "harga_sell": price,
                 "is_top_grid": is_top_grid
             })
             log_only(f"🎯 KETEMU TP: Buy@{harga_beli:.2f} TP@{tp_harga:.2f} Now@{price:.2f}")
 
-    return list_sell # BALIKIN LIST. BISA 0, 1, ATAU 5 ORDER SEKALIGUS
+    return list_sell
 
 def cek_sell_instan_darurat(price):
     global PERLU_REENTRY, LAST_REENTRY_TIME
