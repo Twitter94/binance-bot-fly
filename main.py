@@ -121,7 +121,7 @@ def kirim_status_lengkap():
     status_txt = "PAUSE" if NOTIF_FLAGS[flag_key] else "JALAN"
     emoji_status = "🔴" if status_txt=="PAUSE" else "🟢"
 
-    msg = f"""<b> SAFANA GRID MURNI</b>
+    msg = f"""<b> SAFANA GRID MURNI FIX</b>
 
 {emoji_status} {status_txt} | {mode} | {mode_uang}
 Harga: ${price:.2f} | Grid: ${jarak:.2f}
@@ -132,7 +132,7 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
         no = 1
         for d in data_open:
             harga_buy = float(d['price'])
-            tp = harga_buy + jarak
+            tp = harga_buy + jarak # <-- INI YG DIBENERIN
             msg += f"{no:2}.| ${harga_buy:8.2f}| ${tp:8.2f}\n"
             no+=1
         msg += "</code>"
@@ -214,15 +214,28 @@ def bersihin_sampah():
     gc.collect()
 
 def sb_delete(order_id):
+    mode_sekarang = "PAPER" if STATE["paper_mode"] else "RILL"
     for i in range(5):
         try:
-            r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=10)
+            # TAMBAH FILTER MODE BIAR GA SALAH HAPUS
+            r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}&mode=eq.{mode_sekarang}", headers=SB_HEADERS, timeout=10)
             if r.status_code == 204:
                 log_only(f"✅ HAPUS DB SUKSES: {order_id}")
                 return True
+            else:
+                log_only(f"⚠️ HAPUS DB GAGAL {i+1}/5: {r.status_code} {r.text}")
         except Exception as e:
-            log_only(f"⚠️ HAPUS DB GAGAL {i+1}/5: {repr(e)}")
-        time.sleep(1)
+            log_only(f"⚠️ HAPUS DB CRASH {i+1}/5: {repr(e)}")
+        time.sleep(2) # KASIH JEDA LEBIH LAMA
+
+    # KALAU 5X GAGAL, FORCE HAPUS TANPA FILTER MODE
+    try:
+        r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=10)
+        if r.status_code == 204:
+            log_only(f"✅ HAPUS DB FORCE SUKSES: {order_id}")
+            return True
+    except: pass
+
     notif_penting(f"❌ FATAL: GAGAL HAPUS {order_id} 5X")
     return False
 
@@ -474,8 +487,10 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 NOTIF_FLAGS[flag_key]=True; return
             if NOTIF_FLAGS[flag_key] == True: notif_penting(f"✅ <b>SALDO SUDAH CUKUP {mode_txt}</b>\nUSDT: {usdt:.2f}\nLanjut Trading..."); NOTIF_FLAGS[flag_key]=False
             if PERLU_REENTRY: notif_penting(f"✅ <b>RE-ENTRY BERHASIL {mode_txt}</b>\nGrid sudah ketutup di {price_grid:.2f}"); PERLU_REENTRY = False
+            
             nilai_beli = price_grid * float(qty)
             if nilai_beli < BINANCE_RULES['min_notional']: log_only(f"❌ GAGAL BUY {mode_txt}: Nilai {nilai_beli:.2f} < Min 5 USDT"); return
+
             fee_buy = 0; order_id = int(time.time())
             if STATE["paper_mode"]:
                 STATE["paper_usdt"] -= nilai_beli; STATE["paper_btc"] += float(qty); save_state()
@@ -484,6 +499,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
                 if 'orderId' not in res: raise Exception(f"BINANCE BUY FAIL: {res}")
                 order_id = res['orderId']; qty = res['executedQty']; fee_buy = sum([float(f['commission']) for f in res.get('fills',[])])
+
             sb_insert({"price":price_grid, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee_buy})
             usdt, _ = get_all_balance()
             if NOTIF_SENT["buy"]!= price_grid: notif_penting(f"{mode_txt} 🟢 <b>BUY TERISI</b>\nHarga: {price_grid:.2f}\nQty: {qty}\nSaldo USDT: {usdt:.2f}"); NOTIF_SENT["buy"] = price_grid; NOTIF_SENT["sell"] = None
@@ -492,43 +508,73 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 
     if side=="SELL":
         order_id_db = order_data['id']
-        if order_id_db in SELL_LOCK: return
+        # ANTI DEADLOCK: kalau udah lock > 60 detik, buka paksa
+        if order_id_db in SELL_LOCK:
+            if time.time() - SELL_LOCK_TIME.get(order_id_db, 0) > 60:
+                log_only(f"⚠️ BUKA PAKSA LOCK: {order_id_db}")
+                SELL_LOCK.discard(order_id_db)
+                SELL_LOCK_TIME.pop(order_id_db, None)
+            else: return
+
         SELL_LOCK.add(order_id_db)
-        SELL_LOCK_TIME[order_id_db] = time.time() # TAMBAH TIMER LOCK
+        SELL_LOCK_TIME[order_id_db] = time.time()
+        
         try:
-            # KUNCI GRID MURNI: HAPUS DB DULU
+            # ========== KUNCI GRID MURNI ==========
+            # 1. HAPUS DARI DB DULU. KALAU GAGAL LANGSUNG STOP
             if not sb_delete(order_id_db):
-                raise Exception("GAGAL HAPUS DB")
+                notif_penting(f"❌ ABORT SELL: Gagal hapus DB id={order_id_db}")
+                raise Exception("ABORT SELL KARENA GAGAL HAPUS DB")
+            # =======================================
 
             _, btc_total = get_all_balance()
             qty_db = float(order_data['qty'])
             qty_str = format_qty(qty_db)
             nilai_jual = price_grid * float(qty_str)
+            harga_beli = float(order_data['price'])
             fee_sell = 0
+            
             if STATE["paper_mode"]:
                 STATE["paper_btc"] -= float(qty_str)
                 STATE["paper_usdt"] += nilai_jual - (nilai_jual * 0.001)
                 save_state()
                 fee_sell = nilai_jual * 0.001
+                order_id_binance = f"PAPER_SELL_{int(time.time())}"
             else:
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
-                if 'orderId' not in res: raise Exception(f"BINANCE SELL FAIL: {res}")
+                if 'orderId' not in res: 
+                    # KALAU SELL GAGAL, BALIKIN LAGI KE DB BIAR GA HILANG
+                    sb_insert(order_data) 
+                    raise Exception(f"BINANCE SELL FAIL: {res}")
+                order_id_binance = res['orderId']
+                qty_str = res['executedQty']
                 fee_sell = sum([float(f['commission']) for f in res.get('fills',[])])
 
-            profit = nilai_jual - (float(order_data['price']) * float(order_data['qty']))
+            profit = nilai_jual - (harga_beli * float(qty_str))
+            DAILY_STATS["profit_usdt"] += profit
+            DAILY_STATS["trade_count"] += 1
+            
             usdt, _ = get_all_balance()
-            if NOTIF_SENT["sell"]!= price_grid: notif_penting(f"{mode_txt} 🔴 <b>SELL TERISI</b>\nBuy: {order_data['price']:.2f} -> Sell: {price_grid:.2f}\nProfit: {profit:.4f} USDT\nSaldo USDT: {usdt:.2f}"); NOTIF_SENT["sell"] = price_grid
+            if NOTIF_SENT["sell"]!= price_grid: 
+                notif_penting(f"{mode_txt} 🔴 <b>SELL TERISI</b>\nBuy: {harga_beli:.2f} -> Sell: {price_grid:.2f}\nProfit: {profit:.4f} USDT\nSaldo USDT: {usdt:.2f}")
+                NOTIF_SENT["sell"] = price_grid
+                NOTIF_SENT["buy"] = None
 
-            # RE-ENTRY SETELAH SELL GRID TERATAS
+            # 2. RE-ENTRY SETELAH SELL GRID TERATAS
             if is_top_grid and RE_ENTRY_MODE:
                 time.sleep(1)
                 usdt_cek, _ = get_all_balance()
-                butuh = hitung_butuh_modal(price_grid, hitung_qty_aman(price_grid))
+                qty_reentry = hitung_qty_aman(price_grid)
+                butuh = hitung_butuh_modal(price_grid, qty_reentry)
                 if usdt_cek >= butuh:
                     notif_penting(f"♻️ {mode_txt} RE-ENTRY: Buy lagi @ {price_grid:.2f}")
-                    place_order_real("BUY", price_grid, hitung_qty_aman(price_grid))
-        except Exception as e: log_error(e, "PLACE_SELL")
-        finally: SELL_LOCK.discard(order_id_db); SELL_LOCK_TIME.pop(order_id_db, None)
+                    place_order_real("BUY", price_grid, qty_reentry)
+
+        except Exception as e: 
+            log_error(e, "PLACE_SELL")
+        finally: 
+            SELL_LOCK.discard(order_id_db)
+            SELL_LOCK_TIME.pop(order_id_db, None)
 
 async def main():
     """LOOP UTAMA BOT VERSI GRID MURNI ANTI SPAM"""
