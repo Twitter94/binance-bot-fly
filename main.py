@@ -398,13 +398,12 @@ def cek_signal_sell(price):
         return []
 
     jarak = ATR_MANAGER["jarak"]
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True) # ASC dari bawah
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True) # UDAH ASC = DARI BAWAH
 
     list_tp = []
     if len(data_open) == 0:
         return []
 
-    # Ambil id grid paling atas 1x aja buat cek re-entry
     data_tertinggi = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1", pakai_filter_mode=True)
     id_grid_teratas = data_tertinggi[0]['id'] if len(data_tertinggi) > 0 else None
 
@@ -413,7 +412,6 @@ def cek_signal_sell(price):
         tp_harga = harga_beli + jarak
         order_id = order_data['id']
 
-        # Anti spam: kalau grid ini baru diproses 3 detik lalu skip
         if order_id in SELL_LOCK and time.time() - SELL_LOCK_TIME.get(order_id, 0) < 3:
             continue
 
@@ -427,6 +425,7 @@ def cek_signal_sell(price):
             log_only(f"🎯 GRID MURNI TP: Buy@{harga_beli:.2f} -> TP@{tp_harga:.2f} | Now@{price:.2f}")
 
     return list_tp
+    p
 
 def cek_sell_instan_darurat(price):
     global PERLU_REENTRY, LAST_REENTRY_TIME
