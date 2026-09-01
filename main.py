@@ -45,6 +45,7 @@ LAST_RECOVERY = 0
 LAST_SYNC_CICILAN = 0
 BUYING_LOCK = set()
 SELL_LOCK = set()
+SELL_LOCK={}
 PERLU_REENTRY = False
 LAST_REENTRY_TIME = 0
 BASE_URL = "https://api.binance.com"
@@ -66,6 +67,12 @@ def log_only(msg):
         pass
     if NOTIF_MODE == "NORMAL":
         send_telegram(msg)
+
+def log_error(e, ctx=""):
+    import traceback
+    err = traceback.format_exc()
+    msg = f"[{ctx}] {repr(e)}\n{err}"
+    log_only(msg)
 
 def notif_penting(msg):
     try:
@@ -391,7 +398,7 @@ def cek_signal_sell(price):
         return []
 
     jarak = ATR_MANAGER["jarak"]
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True) # ASC = dari bawah
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&order=price.asc", pakai_filter_mode=True) # ASC dari bawah
 
     list_tp = []
     if len(data_open) == 0:
@@ -406,7 +413,7 @@ def cek_signal_sell(price):
         tp_harga = harga_beli + jarak
         order_id = order_data['id']
 
-        # Anti spam: kalau grid ini baru di proses 3 detik lalu skip
+        # Anti spam: kalau grid ini baru diproses 3 detik lalu skip
         if order_id in SELL_LOCK and time.time() - SELL_LOCK_TIME.get(order_id, 0) < 3:
             continue
 
@@ -641,7 +648,6 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
         except Exception as e: log_error(e, "PLACE_SELL")
         finally: SELL_LOCK.discard(order_id_db) # WAJIB BUKA LOCK
 
-            
 async def main():
     global START_TIME, LAST_RECOVERY, PERLU_REENTRY
     
@@ -669,7 +675,8 @@ async def main():
         update_atr_manager() 
         retry += 1
         await asyncio.sleep(1)
-    if retry > 10: 
+        if retry > 10: break
+    if ATR_MANAGER["jarak"] is None: 
         ATR_MANAGER["jarak"] = 500
         notif_penting("⚠️ ATR Gagal 10x. Pakai jarak default 500")
     
