@@ -455,9 +455,9 @@ def cek_order_binance_sudah_ada(price_target):
     data = signed_request("GET", "/api/v3/openOrders", {"symbol":SYMBOL})
     if not isinstance(data, list): return False
     for o in data:
-        if abs(float(d['price']) - price_target) < 0.01: return True
+        if abs(float(o['price']) - price_target) < 0.01: return True # FIX: o bukan d
     return False
-
+    
 def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
     global NOTIF_FLAGS, NOTIF_SENT, BUYING_LOCK, SELL_LOCK, SELL_LOCK_TIME, PERLU_REENTRY, LAST_REENTRY_TIME
     mode_txt = "[PAPER]" if STATE["paper_mode"] else "[RILL]"
