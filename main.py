@@ -52,7 +52,7 @@ BASE_URL = "https://api.binance.com"
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 ATR_MANAGER = {"jarak": None, "date": None, "atr": 0}
 DAILY_STATS = {"trade_count": 0, "profit_usdt": 0.0, "date": None}
-WIB = timezone(timedelta(hours=7)) # FIX: INI BUAT GANTI JKT
+WIB = timezone(timedelta(hours=7))
 NOTIF_FLAGS = {"error": False, "saldo_kurang_rill": False, "saldo_kurang_paper": False, "critical_msg": ""}
 NOTIF_SENT = {"buy": None, "sell": None}
 SB_HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
@@ -132,7 +132,7 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
         no = 1
         for d in data_open:
             harga_buy = float(d['price'])
-            tp = harga_buy + jarak # <-- INI YG DIBENERIN
+            tp = harga_buy + jarak
             msg += f"{no:2}.| ${harga_buy:8.2f}| ${tp:8.2f}\n"
             no+=1
         msg += "</code>"
@@ -217,7 +217,6 @@ def sb_delete(order_id):
     mode_sekarang = "PAPER" if STATE["paper_mode"] else "RILL"
     for i in range(5):
         try:
-            # TAMBAH FILTER MODE BIAR GA SALAH HAPUS
             r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}&mode=eq.{mode_sekarang}", headers=SB_HEADERS, timeout=10)
             if r.status_code == 204:
                 log_only(f"✅ HAPUS DB SUKSES: {order_id}")
@@ -226,17 +225,7 @@ def sb_delete(order_id):
                 log_only(f"⚠️ HAPUS DB GAGAL {i+1}/5: {r.status_code} {r.text}")
         except Exception as e:
             log_only(f"⚠️ HAPUS DB CRASH {i+1}/5: {repr(e)}")
-        time.sleep(2) # KASIH JEDA LEBIH LAMA
-
-    # KALAU 5X GAGAL, FORCE HAPUS TANPA FILTER MODE
-    try:
-        r = requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS, timeout=10)
-        if r.status_code == 204:
-            log_only(f"✅ HAPUS DB FORCE SUKSES: {order_id}")
-            return True
-    except: pass
-
-    notif_penting(f"❌ FATAL: GAGAL HAPUS {order_id} 5X")
+        time.sleep(2)
     return False
 
 def signed_request(method, endpoint, params=None):
@@ -361,7 +350,8 @@ def update_atr_manager():
         if atr_baru == 0: return
         jarak_mentah = atr_baru * ATR_MULTIPLIER; jarak = max(MIN_JARAK, min(jarak_mentah, MAX_JARAK))
         ATR_MANAGER = {"jarak": jarak, "atr": atr_baru, "date": hari_ini_wib}
-        notif_penting(f"📊 <b>ATR UPDATE 00:00</b>\nATR: {atr_baru:.2f}\nJarak: {jarak:.2f}")
+        # DIHAPUS BIAR SILENT
+        # notif_penting(f"📊 <b>ATR UPDATE 00:00</b>\nATR: {atr_baru:.2f}\nJarak: {jarak:.2f}")
 
 def is_price_exist(price):
     jarak = ATR_MANAGER["jarak"] if ATR_MANAGER["jarak"] else MIN_JARAK
@@ -392,7 +382,6 @@ def cek_signal_buy(price):
     return False, 0
 
 def cek_signal_sell_murni(price):
-    """GRID MURNI: CEK 1 GRID PALING BAWAH YG TP. RETURN 1 AJA"""
     global ATR_MANAGER, SELL_LOCK, SELL_LOCK_TIME
     update_atr_manager()
     if ATR_MANAGER["jarak"] is None: return None
@@ -487,7 +476,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 NOTIF_FLAGS[flag_key]=True; return
             if NOTIF_FLAGS[flag_key] == True: notif_penting(f"✅ <b>SALDO SUDAH CUKUP {mode_txt}</b>\nUSDT: {usdt:.2f}\nLanjut Trading..."); NOTIF_FLAGS[flag_key]=False
             if PERLU_REENTRY: notif_penting(f"✅ <b>RE-ENTRY BERHASIL {mode_txt}</b>\nGrid sudah ketutup di {price_grid:.2f}"); PERLU_REENTRY = False
-            
+
             nilai_beli = price_grid * float(qty)
             if nilai_beli < BINANCE_RULES['min_notional']: log_only(f"❌ GAGAL BUY {mode_txt}: Nilai {nilai_beli:.2f} < Min 5 USDT"); return
 
@@ -508,7 +497,6 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 
     if side=="SELL":
         order_id_db = order_data['id']
-        # ANTI DEADLOCK: kalau udah lock > 60 detik, buka paksa
         if order_id_db in SELL_LOCK:
             if time.time() - SELL_LOCK_TIME.get(order_id_db, 0) > 60:
                 log_only(f"⚠️ BUKA PAKSA LOCK: {order_id_db}")
@@ -518,14 +506,10 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 
         SELL_LOCK.add(order_id_db)
         SELL_LOCK_TIME[order_id_db] = time.time()
-        
+
         try:
-            # ========== KUNCI GRID MURNI ==========
-            # 1. HAPUS DARI DB DULU. KALAU GAGAL LANGSUNG STOP
             if not sb_delete(order_id_db):
-                notif_penting(f"❌ ABORT SELL: Gagal hapus DB id={order_id_db}")
                 raise Exception("ABORT SELL KARENA GAGAL HAPUS DB")
-            # =======================================
 
             _, btc_total = get_all_balance()
             qty_db = float(order_data['qty'])
@@ -533,7 +517,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             nilai_jual = price_grid * float(qty_str)
             harga_beli = float(order_data['price'])
             fee_sell = 0
-            
+
             if STATE["paper_mode"]:
                 STATE["paper_btc"] -= float(qty_str)
                 STATE["paper_usdt"] += nilai_jual - (nilai_jual * 0.001)
@@ -542,9 +526,8 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
                 order_id_binance = f"PAPER_SELL_{int(time.time())}"
             else:
                 res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty_str})
-                if 'orderId' not in res: 
-                    # KALAU SELL GAGAL, BALIKIN LAGI KE DB BIAR GA HILANG
-                    sb_insert(order_data) 
+                if 'orderId' not in res:
+                    sb_insert(order_data)
                     raise Exception(f"BINANCE SELL FAIL: {res}")
                 order_id_binance = res['orderId']
                 qty_str = res['executedQty']
@@ -553,31 +536,28 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
             profit = nilai_jual - (harga_beli * float(qty_str))
             DAILY_STATS["profit_usdt"] += profit
             DAILY_STATS["trade_count"] += 1
-            
+
             usdt, _ = get_all_balance()
-            if NOTIF_SENT["sell"]!= price_grid: 
+            if NOTIF_SENT["sell"]!= price_grid:
                 notif_penting(f"{mode_txt} 🔴 <b>SELL TERISI</b>\nBuy: {harga_beli:.2f} -> Sell: {price_grid:.2f}\nProfit: {profit:.4f} USDT\nSaldo USDT: {usdt:.2f}")
                 NOTIF_SENT["sell"] = price_grid
                 NOTIF_SENT["buy"] = None
 
-            # 2. RE-ENTRY SETELAH SELL GRID TERATAS
             if is_top_grid and RE_ENTRY_MODE:
                 time.sleep(1)
                 usdt_cek, _ = get_all_balance()
                 qty_reentry = hitung_qty_aman(price_grid)
                 butuh = hitung_butuh_modal(price_grid, qty_reentry)
                 if usdt_cek >= butuh:
-                    notif_penting(f"♻️ {mode_txt} RE-ENTRY: Buy lagi @ {price_grid:.2f}")
                     place_order_real("BUY", price_grid, qty_reentry)
 
-        except Exception as e: 
+        except Exception as e:
             log_error(e, "PLACE_SELL")
-        finally: 
+        finally:
             SELL_LOCK.discard(order_id_db)
             SELL_LOCK_TIME.pop(order_id_db, None)
 
 async def main():
-    """LOOP UTAMA BOT VERSI GRID MURNI ANTI SPAM"""
     global LAST_RECOVERY, DAILY_STATS
     load_state()
     kirim_keyboard()
@@ -588,7 +568,7 @@ async def main():
     notif_penting("🤖 <b>BOT GRID MURNI START</b>\nMode: PAPER" if STATE["paper_mode"] else "🤖 <b>BOT GRID MURNI START</b>\nMode: REAL")
     log_only("Bot Grid Murni Dimulai")
     await asyncio.sleep(2)
-    kirim_status_lengkap() # FIX: GANTI send_status
+    kirim_status_lengkap()
 
     while True:
         try:
@@ -600,7 +580,7 @@ async def main():
                 recovery_sync()
                 LAST_RECOVERY = time.time()
 
-            now = datetime.now(WIB) # FIX: GANTI JKT JADI WIB
+            now = datetime.now(WIB)
             if DAILY_STATS["date"] is None: DAILY_STATS["date"] = now.strftime("%Y-%m-%d")
             if now.date() > datetime.strptime(DAILY_STATS["date"], "%Y-%m-%d").date():
                 DAILY_STATS = {"profit_usdt": 0.0, "trade_count": 0, "date": now.strftime("%Y-%m-%d")}
@@ -616,16 +596,12 @@ async def main():
 
             signal_buy, grid_buy = cek_signal_buy(price)
             if signal_buy:
-                notif_penting(f"🟢 <b>BUY GRID</b>\nHarga: {grid_buy:.2f}\nJarak: {jarak_txt}")
                 place_order_real("BUY", grid_buy, hitung_qty_aman(grid_buy))
                 await asyncio.sleep(0.5)
 
             hasil_sell = cek_signal_sell_murni(price)
             if hasil_sell:
                 order_data, harga_sell, is_top = hasil_sell
-                harga_beli = float(order_data['price'])
-                profit_est = (harga_sell - harga_beli) * float(order_data['qty'])
-                notif_penting(f"🔴 <b>SELL TP GRID MURNI</b>\nBuy: {harga_beli:.2f}\nSell: {harga_sell:.2f}\nEst Profit: {profit_est:.4f} USDT")
                 place_order_real("SELL", harga_sell, hitung_qty_aman(harga_sell), order_data, is_top)
                 await asyncio.sleep(0.5)
 
@@ -634,7 +610,6 @@ async def main():
 
         except Exception as e:
             log_error(e, "MAIN_LOOP")
-            notif_penting(f"⚠️ <b>ERROR LOOP UTAMA</b>\n{e}")
             await asyncio.sleep(10)
 
 if __name__ == "__main__":
