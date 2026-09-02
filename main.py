@@ -266,19 +266,21 @@ def get_price():
         time.sleep(10)
         return get_price()
 
-def sb_select(filters="", pakai_filter_mode=True):
+def sb_select(filter_query, pakai_filter_mode=True):
     try:
-        if pakai_filter_mode:
-            mode_sekarang = "PAPER" if STATE["paper_mode"] else "RILL"
-            if filters!= "":
-                filters += f"&mode=eq.{mode_sekarang}"
-            else:
-                filters = f"mode=eq.{mode_sekarang}"
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5)
-        if r.status_code!= 200: return []
-        data = r.json()
-        return data if isinstance(data, list) else []
-    except: return []
+        # HAPUS FILTER MODE BIAR SEMUA KE BACA
+        mode_filter = ""
+        # mode_filter = f"&mode=eq.{'PAPER' if STATE['paper_mode'] else 'RILL'}" if pakai_filter_mode else ""
+        
+        url = f"{SUPABASE_URL}/rest/v1/{TABEL}?{filter_query}{mode_filter}&order=time.asc"
+        r = requests.get(url, headers=SB_HEADERS, timeout=5)
+        if r.status_code != 200:
+            log_error(Exception(r.text), f"SB_SELECT {r.status_code}")
+            return []
+        return r.json()
+    except Exception as e:
+        log_error(e, "SB_SELECT")
+        return []
 
 def sb_insert(data):
     try:
@@ -286,18 +288,19 @@ def sb_insert(data):
         data['price'] = float(data['price'])
         data['qty'] = float(data['qty'])
         data['fee'] = float(data.get('fee', 0))
-        data['side'] = data.get('side', 'BUY') # FIX: KASIH DEFAULT BIAR GA NULL
-        data['status'] = data.get('status', 'OPEN') # FIX: KASIH DEFAULT
+        data['side'] = data.get('side', 'BUY')
+        data['status'] = data.get('status', 'OPEN')
+        if 'time' not in data: data['time'] = int(time.time()) # TAMBAH TIME
         
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
         if r.status_code not in [200, 201]:
-            notif_penting(f"❌ SB_INSERT GAGAL {r.status_code}: {r.text}") # TAMPILIN ERROR ASLI
-            save_to_json(data) # BACKUP KE JSON BIAR GA HILANG
+            notif_penting(f"❌ SB_INSERT GAGAL {r.status_code}: {r.text}")
+            save_to_json(data) # BACKUP
             return []
         return r.json()
     except Exception as e:
         notif_penting(f"❌ SB_INSERT CRASH: {repr(e)}")
-        save_to_json(data) # BACKUP KE JSON BIAR GA HILANG
+        save_to_json(data)
         return []
 
 def get_all_balance():
