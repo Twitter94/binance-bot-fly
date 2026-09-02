@@ -90,11 +90,11 @@ def send_telegram(msg):
         pass
 
 def kirim_keyboard():
-    # FIX: CUMA ADA MODE DAN STATUS. RILL/PAPER HARUS KETIK MANUAL
-    keyboard = {"keyboard": [[{"text": "MODE"}, {"text": "STATUS"}]], "resize_keyboard": True, "one_time_keyboard": False}
+    # FIX: TAMBAH TOMBOL RESTART BUAT PAKSA SYNC
+    keyboard = {"keyboard": [[{"text": "MODE"}, {"text": "STATUS"}], [{"text": "RESTART"}]], "resize_keyboard": True, "one_time_keyboard": False}
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>\n\nMODE = Ganti Silent/Normal\nSTATUS = Lihat Posisi\n\nKetik: RILL atau PAPER untuk ganti mode uang", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
+        requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>\n\nMODE = Ganti Silent/Normal\nSTATUS = Lihat Posisi\nRESTART = Paksa Scan Ulang BTC", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
     except:
         pass
 
@@ -149,7 +149,8 @@ def cek_command_telegram():
         if chat_id!= TELE_CHAT_ID: return
         global NOTIF_MODE
 
-        if text == "STATUS": kirim_status_lengkap()
+        if text == "STATUS": 
+            kirim_status_lengkap()
         elif text == "MODE":
             NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"
             txt = "🔊 MODE: NORMAL" if NOTIF_MODE == "NORMAL" else "🔇 MODE: SILENT"
@@ -164,8 +165,16 @@ def cek_command_telegram():
             NOTIF_FLAGS["saldo_kurang_paper"] = False
             save_state()
             notif_penting("🧪 <b>GANTI MODE: PAPER</b>\nBot sekarang trading pake saldo simulasi")
+        
+        # TAMBAHAN BARU INI
+        elif text == "RESTART":
+            notif_penting("🔄 <b>FORCE RESTART SYNC</b>\nBot akan scan ulang BTC di Binance dan pasang TP yg hilang")
+            sync_3_sumber()
+            kirim_status_lengkap()
+
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={last_update['update_id']+1}")
-    except: pass
+    except Exception as e: 
+        log_error(e, "CEK_COMMAND")
 
 def recovery_sync():
     log_only("🔄 MENJALANKAN RECOVERY SYNC")
@@ -277,13 +286,18 @@ def sb_insert(data):
         data['price'] = float(data['price'])
         data['qty'] = float(data['qty'])
         data['fee'] = float(data.get('fee', 0))
+        data['side'] = data.get('side', 'BUY') # FIX: KASIH DEFAULT BIAR GA NULL
+        data['status'] = data.get('status', 'OPEN') # FIX: KASIH DEFAULT
+        
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
         if r.status_code not in [200, 201]:
-            notif_penting(f"❌ SB_INSERT GAGAL {r.status_code}: {r.text}")
+            notif_penting(f"❌ SB_INSERT GAGAL {r.status_code}: {r.text}") # TAMPILIN ERROR ASLI
+            save_to_json(data) # BACKUP KE JSON BIAR GA HILANG
             return []
         return r.json()
     except Exception as e:
         notif_penting(f"❌ SB_INSERT CRASH: {repr(e)}")
+        save_to_json(data) # BACKUP KE JSON BIAR GA HILANG
         return []
 
 def get_all_balance():
