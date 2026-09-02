@@ -11,7 +11,7 @@ import math
 from urllib.parse import urlencode
 from datetime import datetime, timezone, timedelta
 
-NOTIF_MODE = "SILENT" # DEFAULT SILENT
+NOTIF_MODE = "SILENT"
 
 BINANCE_API_KEY = os.getenv("API_KEY")
 BINANCE_SECRET = os.getenv("API_SECRET")
@@ -74,7 +74,7 @@ def log_error(e, ctx=""):
     msg = f"[{ctx}] {repr(e)}\n{err}"
     log_only(msg)
 
-def notif_penting(msg): # INI CUMA BUAT BUY/SELL TERISI + ERROR PENTING
+def notif_penting(msg):
     try:
         with open("bot_log.txt", "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now(WIB).strftime('%H:%M:%S')}] {msg}\n")
@@ -90,10 +90,11 @@ def send_telegram(msg):
         pass
 
 def kirim_keyboard():
-    keyboard = {"keyboard": [[{"text": "MODE"}, {"text": "STATUS"}], [{"text": "RILL"}, {"text": "PAPER"}]], "resize_keyboard": True, "one_time_keyboard": False}
+    # FIX: CUMA ADA MODE DAN STATUS. RILL/PAPER HARUS KETIK MANUAL
+    keyboard = {"keyboard": [[{"text": "MODE"}, {"text": "STATUS"}]], "resize_keyboard": True, "one_time_keyboard": False}
     try:
         url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>\n\nMODE = Ganti Silent/Normal\nRILL/PAPER = Ganti mode uang", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
+        requests.post(url, data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>\n\nMODE = Ganti Silent/Normal\nSTATUS = Lihat Posisi\n\nKetik: RILL atau PAPER untuk ganti mode uang", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)}, timeout=5)
     except:
         pass
 
@@ -152,7 +153,7 @@ def cek_command_telegram():
         elif text == "MODE":
             NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"
             txt = "🔊 MODE: NORMAL" if NOTIF_MODE == "NORMAL" else "🔇 MODE: SILENT"
-            notif_penting(f"{txt} AKTIF") # INI PENTING JADI TETEP KIRIM
+            notif_penting(f"{txt} AKTIF")
         elif text == "RILL":
             STATE["paper_mode"] = False
             NOTIF_FLAGS["saldo_kurang_rill"] = False
@@ -454,7 +455,7 @@ def cek_order_binance_sudah_ada(price_target):
     data = signed_request("GET", "/api/v3/openOrders", {"symbol":SYMBOL})
     if not isinstance(data, list): return False
     for o in data:
-        if abs(float(o['price']) - price_target) < 0.01: return True
+        if abs(float(d['price']) - price_target) < 0.01: return True
     return False
 
 def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
@@ -558,7 +559,7 @@ def place_order_real(side, price_grid, qty, order_data=None, is_top_grid=False):
 async def main():
     global LAST_RECOVERY, DAILY_STATS
     load_state()
-    kirim_keyboard() # INI YG BIKIN TOMBOL MODE MUNCUL
+    kirim_keyboard()
     get_binance_rules(SYMBOL)
     cek_tabel_supabase()
     LAST_RECOVERY = time.time()
