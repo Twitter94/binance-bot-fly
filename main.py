@@ -37,7 +37,7 @@ WIB = timezone(timedelta(hours=7))
 # ========== GLOBAL ==========
 STATE = {
     "paper_mode": True,
-    "paper_usdt": 10000.0,
+    "paper_usdt": 100.0,
     "paper_btc": 0.0,
     "last_buy_price": None,
     "last_buy_time": 0
@@ -180,7 +180,15 @@ def sync_binance(): # AUTO CLEANUP ADA DISINI
 def cek_buy(harga):
     global LAST_BUY_PRICE_LOCK, STATE
 
-    # BUY PERTAMA
+    harga = round(harga, 2) # Bulatkan biar 80000.01 = 80000.00
+
+    # RULE 1: CEK DULU APAKAH DI HARGA INI UDAH ADA POSISI
+    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{harga}")
+    if len(data_open) > 0:
+        log(f"Nahan BUY. Harga ${harga} sudah ada posisi")
+        return
+
+    # RULE 2: BUY PERTAMA
     if STATE["last_buy_price"] is None:
         if time.time() - STATE["last_buy_time"] > WAIT_FIRST_BUY:
             if place_buy(harga):
@@ -190,7 +198,7 @@ def cek_buy(harga):
                 save_state()
         return
 
-    # BUY SELANJUTNYA: HARUS TURUN 250 DARI KUNCI
+    # RULE 3: BUY SELANJUTNYA HARUS TURUN 250 DARI KUNCI
     if LAST_BUY_PRICE_LOCK is None:
         LAST_BUY_PRICE_LOCK = STATE["last_buy_price"]
 
@@ -217,9 +225,16 @@ def cek_sell(price):
     return None
 
 def place_buy(price):
+    price = round(price, 2) # SAMAIN PEMBULATAN
     if price in BUYING_LOCK: return False
     BUYING_LOCK.add(price)
     try:
+        # DOUBLE CHECK SEBELUM EKSEKUSI
+        data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{price}")
+        if len(data_open) > 0:
+            log(f"BATAL BUY. Harga ${price} keduluan ada posisi")
+            return False
+
         qty = hitung_qty_aman(price)
         usdt, _ = get_balance()
         butuh = hitung_butuh_modal(price, qty)
@@ -346,7 +361,7 @@ async def main():
         if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
         if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
 
-    notif(f"🤖 <b>BOT V14.4.4 ANTI SPAM</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
+    notif(f"🤖 <b>BOT V14.4.5 ANTI DOBEL HARGA</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     kirim_keyboard()
 
     while True:
