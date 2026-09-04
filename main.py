@@ -74,10 +74,7 @@ def hitung_qty_aman(harga):
         qty += step
     return format_qty(qty)
 def hitung_butuh_modal(price, qty): modal = price * float(qty); fee_1x = modal * 0.001; buffer = fee_1x * 5; return modal + fee_1x + fee_1x + buffer
-
-# TAMBAHAN 1: BULETIN HARGA KE GRID
-def to_grid(harga):
-    return round(round(harga / GRID_JARAK) * GRID_JARAK, 2)
+def to_grid(harga): return round(round(harga / GRID_JARAK) * GRID_JARAK, 2) # BULETIN KE GRID
 
 # ========== SUPABASE ==========
 def auto_setup_supabase():
@@ -180,17 +177,22 @@ def sync_binance():
 
 def cek_buy(harga_asli):
     global STATE
-    harga = to_grid(harga_asli) # UBAH 1: BULETIN DULU
+    harga = to_grid(harga_asli)
 
     if len(sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{harga}")) > 0: return # Cegah dobel
 
+    # INI KUNCINYA: AMBIL HARGA GRID PALING ATAS
     data_atas = sb_select("status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
     if not data_atas:
         if time.time() - STATE["last_buy_time"] > WAIT_FIRST_BUY: place_buy(harga)
         return
 
-    if float(data_atas[0]['price']) - harga >= GRID_JARAK: # Turun 250 dari atas
+    harga_grid_teratas = float(data_atas[0]['price']) # BUKAN last_buy_price
+
+    if harga_grid_teratas - harga >= GRID_JARAK: # Turun 250 dari grid atas
         place_buy(harga)
+    else:
+        log(f"Nahan BUY. Harga Atas: {harga_grid_teratas} | Harga Skrg: {harga} | Jarak: {harga_grid_teratas - harga}")
 
 def cek_sell(price):
     to_sell = []
@@ -202,7 +204,7 @@ def cek_sell(price):
     return to_sell
 
 def place_buy(price):
-    price = to_grid(price) # UBAH 2: BULETIN JUGA DISINI
+    price = to_grid(price)
     if price in BUYING_LOCK: return False
     BUYING_LOCK.add(price)
     try:
@@ -248,8 +250,8 @@ def place_sell(data):
         delete_ok = sb_delete(oid)
         profit = (harga_jual - float(data['order']['price'])) * float(qty) - fee - float(data['order']['fee'])
         notif(f"🔴 <b>SELL TP</b>\nBuy: ${float(data['order']['price']):.2f} -> Sell: ${harga_jual:.2f}\nProfit: ${profit:.4f}")
-        if data['is_top']: # INI KUNCI GRID INFINITE
-            place_buy(to_grid(harga_jual)) # UBAH 3: BULETIN HARGA JUAL JUGA
+        if data['is_top']: # RE-ENTRY DARI HARGA TP
+            place_buy(to_grid(harga_jual))
     finally:
         if delete_ok: SELL_LOCK.discard(oid)
 
@@ -295,7 +297,7 @@ def kirim_keyboard():
 def cek_tele():
     global NOTIF_MODE
     try:
-        r = requests.get(f"{TELE_TOKEN}/getUpdates", timeout=3).json()
+        r = requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates", timeout=3).json()
         if not r.get('result'): return
         u = r['result'][-1]; text = u['message']['text'].strip().upper()
         if str(u['message']['chat']['id'])!= TELE_CHAT_ID: return
@@ -327,7 +329,7 @@ async def main():
         if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
         if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
 
-    notif(f"🤖 <b>BOT V14.4.10 ANTI DOBEL</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
+    notif(f"🤖 <b>BOT V14.4.11 BUY DARI ATAS</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     kirim_keyboard()
 
     while True:
