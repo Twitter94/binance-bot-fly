@@ -253,20 +253,40 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
 
 # ========== TELEGRAM ==========
 def kirim_keyboard():
-    keyboard = {"keyboard": [[{"text": "GANTI MODE"}, {"text": "STATUS"}]], "resize_keyboard": True} # RESET UDAH DIHAPUS
-    requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Aktif</b>", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)})
+    # CUMA 1 TOMBOL STATUS
+    keyboard = {"keyboard": [[{"text": "STATUS"}]], "resize_keyboard": True}
+    requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={
+        "chat_id": TELE_CHAT_ID, 
+        "text": "✅ <b>Panel Kontrol Aktif</b>\n\n<b>Perintah Ketik:</b>\n`PAPER` = Mode Simulasi\n`RILL` = Mode Real\n`SILENT` = Notif Penting\n`NORMAL` = Notif Lengkap\n`STATUS` = Lihat Posisi", 
+        "parse_mode": "HTML", 
+        "reply_markup": json.dumps(keyboard)
+    })
 
 def cek_tele():
     global NOTIF_MODE
     try:
         r = requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates", timeout=3).json()
         if not r.get('result'): return
-        u = r['result'][-1]; text = u['message']['text'].upper()
+        u = r['result'][-1]; text = u['message']['text'].strip().upper()
         if str(u['message']['chat']['id'])!= TELE_CHAT_ID: return
-        if text == "STATUS": kirim_status_cantik()
-        elif text == "GANTI MODE": NOTIF_MODE = "NORMAL" if NOTIF_MODE == "SILENT" else "SILENT"; notif(f"🔊 MODE {NOTIF_MODE}")
+
+        if text == "STATUS": 
+            kirim_status_cantik()
+        elif text == "PAPER": 
+            STATE["paper_mode"]=True; save_state(); notif("🧪 <b>MODE PAPER AKTIF</b>\nSaldo Virtual: $10.000")
+        elif text == "RILL": 
+            usdt, _ = get_balance()
+            STATE["paper_mode"]=False; save_state(); notif(f"💰 <b>MODE RILL AKTIF</b>\nSaldo: ${usdt:.2f}\nHATI-HATI INI UANG BENERAN")
+        elif text == "SILENT": 
+            NOTIF_MODE = "SILENT"; notif("🔇 <b>MODE SILENT</b>\nCuma notif BUY/SELL/ERROR")
+        elif text == "NORMAL": 
+            NOTIF_MODE = "NORMAL"; notif("🔊 <b>MODE NORMAL</b>\nNotifikasi Lengkap Aktif")
+        else:
+            notif("❓ Perintah tidak dikenal\nKetik: PAPER / RILL / SILENT / NORMAL / STATUS")
+            
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={u['update_id']+1}")
-    except: pass
+    except Exception as e: 
+        log(f"TELE ERROR: {repr(e)}")
 
 # ========== MAIN ==========
 async def main():
