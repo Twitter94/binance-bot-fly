@@ -38,6 +38,8 @@ WIB = timezone(timedelta(hours=7))
 STATE = {"paper_mode": True, "paper_usdt": 10000.0, "paper_btc": 0.0}
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 BUYING_LOCK = set(); SELL_LOCK = set(); START_TIME = time.time(); FIRST_BUY_DONE = False; LAST_SYNC = 0
+LAST_BUY_PRICE_LOCK = None # Harga patokan buat turun 250
+
 
 # ========== UTIL ==========
 def log(msg):
@@ -161,12 +163,28 @@ def sync_binance(): # AUTO CLEANUP ADA DISINI
             if sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": oid, "fee": fee, "time": int(o['time']/1000)}):
                 notif(f"[RILL] RECOVERY: BUY {harga:.2f}")
 
-def cek_buy(price):
-    global FIRST_BUY_DONE
-    data_open = sb_select("status=eq.OPEN&side=eq.BUY&order=price.desc")
-    if not FIRST_BUY_DONE and len(data_open)==0 and time.time()-START_TIME>WAIT_FIRST_BUY: FIRST_BUY_DONE=True; return True, price
-    if data_open and price <= float(data_open[0]['price']) - GRID_JARAK: return True, price
-    return False, 0
+def cek_buy(harga):
+    global LAST_BUY_PRICE_LOCK
+    
+    # BUY PERTAMA
+    if STATE["last_buy_price"] is None:
+        if time.time() - STATE["last_buy_time"] > 60:
+            if place_buy(harga): # kalau berhasil BUY
+                LAST_BUY_PRICE_LOCK = harga # Kunci harga disini
+        return
+
+    # BUY SELANJUTNYA: HARUS TURUN 250 DARI KUNCI
+    if LAST_BUY_PRICE_LOCK is None:
+        LAST_BUY_PRICE_LOCK = STATE["last_buy_price"]
+    
+    jarak = LAST_BUY_PRICE_LOCK - harga
+    
+    if jarak >= GRID_JARAK: # 250
+        if place_buy(harga):
+            LAST_BUY_PRICE_LOCK = harga # Geser kuncinya ke harga BUY baru
+            log(f"KUNCI BUY DIGESER KE: {harga}")
+    else:
+        log(f"Nahan BUY. Jarak: ${jarak:.2f} / Butuh: ${GRID_JARAK}")
 
 def cek_sell(price):
     data_open = sb_select("status=eq.OPEN&side=eq.BUY&order=price.asc&limit=1")
