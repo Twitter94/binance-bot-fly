@@ -35,11 +35,16 @@ SB_HEADERS_DELETE = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE
 WIB = timezone(timedelta(hours=7))
 
 # ========== GLOBAL ==========
-STATE = {"paper_mode": True, "paper_usdt": 10000.0, "paper_btc": 0.0}
+STATE = {
+    "paper_mode": True,
+    "paper_usdt": 10000.0,
+    "paper_btc": 0.0,
+    "last_buy_price": None,
+    "last_buy_time": 0
+}
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
-BUYING_LOCK = set(); SELL_LOCK = set(); START_TIME = time.time(); FIRST_BUY_DONE = False; LAST_SYNC = 0
+BUYING_LOCK = set(); SELL_LOCK = set(); START_TIME = time.time(); LAST_SYNC = 0
 LAST_BUY_PRICE_LOCK = None # Harga patokan buat turun 250
-
 
 # ========== UTIL ==========
 def log(msg):
@@ -82,47 +87,29 @@ def auto_setup_supabase():
         notif("✅ Tabel `orders` siap")
     r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, timeout=5)
     if r.status_code!= 200 or not r.json():
-        requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}", headers=SB_HEADERS, json={"id":1, **STATE})
+        requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}", headers=SB_HEADERS, json={"id":1, "data": STATE})
         notif("✅ Tabel `bot_state` siap")
-
-STATE = {
-    "paper_mode": True, 
-    "paper_usdt": 10000.0, 
-    "paper_btc": 0.0,
-    "last_buy_price": None, # TAMBAH INI
-    "last_buy_time": 0 # TAMBAH INI
-}
 
 def load_state():
     global STATE
     try:
-        r = requests.get(f"{SUPA_URL}/rest/v1/bot_state?id=eq.1", headers=HEADERS).json()
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, timeout=5).json()
         if r:
             data = r[0]['data']
-            #.get biar gak error kalau key belum ada
             STATE["paper_mode"] = data.get("paper_mode", True)
             STATE["paper_usdt"] = data.get("paper_usdt", 10000.0)
             STATE["paper_btc"] = data.get("paper_btc", 0.0)
-            STATE["last_buy_price"] = data.get("last_buy_price", None) # ANTI KEYERROR
-            STATE["last_buy_time"] = data.get("last_buy_time", 0) # ANTI KEYERROR
+            STATE["last_buy_price"] = data.get("last_buy_price", None)
+            STATE["last_buy_time"] = data.get("last_buy_time", 0)
             log("STATE LOADED")
-    except: log("STATE BARU DIBUAT")
+    except Exception as e: log(f"LOAD STATE ERROR: {e}")
 
 def save_state():
     try:
-        data = {
-            "id": 1,
-            "data": {
-                "paper_mode": STATE["paper_mode"],
-                "paper_usdt": STATE["paper_usdt"],
-                "paper_btc": STATE["paper_btc"],
-                "last_buy_price": STATE["last_buy_price"], # SIMPAN JUGA
-                "last_buy_time": STATE["last_buy_time"] # SIMPAN JUGA
-            }
-        }
-        requests.post(f"{SUPA_URL}/rest/v1/bot_state", headers=HEADERS, data=json.dumps(data))
+        data = {"id": 1, "data": STATE}
+        requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}", headers=SB_HEADERS, data=json.dumps(data), timeout=5)
     except Exception as e: log(f"SAVE STATE ERROR: {e}")
-        
+
 def sb_select(filters=""):
     try:
         mode = "PAPER" if STATE["paper_mode"] else "RILL"
@@ -148,7 +135,7 @@ def sb_delete(order_id):
     except: pass
     return False
 
-def save_json(data): 
+def save_json(data):
     pending = json.load(open(JSON_FILE)) if os.path.exists(JSON_FILE) else []
     pending.append(data); json.dump(pending, open(JSON_FILE, 'w'))
 
@@ -159,10 +146,13 @@ def load_json():
 # ========== CORE ==========
 def get_balance():
     if STATE["paper_mode"]: return STATE["paper_usdt"], STATE["paper_btc"]
-    data = signed_request("GET", "/api/v3/account")
-    usdt = float(next((b['free'] for b in data.get('balances',[]) if b['asset']=='USDT'), 0))
-    btc = float(next((b['free'] for b in data.get('balances',[]) if b['asset']=='BTC'), 0))
-    return usdt, btc
+    try:
+        data = signed_request("GET", "/api/v3/account")
+        usdt = float(next((b['free'] for b in data.get('balances',[]) if b['asset']=='USDT'), 0))
+        btc = float(next((b['free'] for b in data.get('balances',[]) if b['asset']=='BTC'), 0))
+        return usdt, btc
+    except:
+        return 0.0, 0.0
 
 def sync_binance(): # AUTO CLEANUP ADA DISINI
     global LAST_SYNC
@@ -170,21 +160,16 @@ def sync_binance(): # AUTO CLEANUP ADA DISINI
     LAST_SYNC = time.time()
     if STATE["paper_mode"]: return
 
-    # 1. Ambil semua order OPEN di DB
     data_db = sb_select("status=eq.OPEN&side=eq.BUY")
-    db_ids = {str(d['binance_order_id']): d for d in data_db if d['binance_order_id'].isdigit()}
-
-    # 2. Ambil semua order dari Binance
+    db_ids = {str(d['binance_order_id']): d for d in data_db if str(d['binance_order_id']).isdigit()}
     binance_orders = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
     binance_ids = {str(o['orderId']) for o in binance_orders}
 
-    # 3. AUTO CLEANUP: Kalau ada di DB tapi gak ada di Binance = HAPUS
     for oid, data in db_ids.items():
         if oid not in binance_ids:
             if sb_delete(data['id']):
                 notif(f"🧹 AUTO CLEANUP: Hapus order nyangkut {data['price']:.2f}")
 
-    # 4. RECOVERY: Kalau ada di Binance tapi gak ada di DB = INSERT
     for o in binance_orders:
         oid = str(o['orderId'])
         if o['side']=='BUY' and o['status']=='FILLED' and oid not in db_ids:
@@ -193,24 +178,30 @@ def sync_binance(): # AUTO CLEANUP ADA DISINI
                 notif(f"[RILL] RECOVERY: BUY {harga:.2f}")
 
 def cek_buy(harga):
-    global LAST_BUY_PRICE_LOCK
-    
+    global LAST_BUY_PRICE_LOCK, STATE
+
     # BUY PERTAMA
     if STATE["last_buy_price"] is None:
-        if time.time() - STATE["last_buy_time"] > 60:
-            if place_buy(harga): # kalau berhasil BUY
-                LAST_BUY_PRICE_LOCK = harga # Kunci harga disini
+        if time.time() - STATE["last_buy_time"] > WAIT_FIRST_BUY:
+            if place_buy(harga):
+                LAST_BUY_PRICE_LOCK = harga
+                STATE["last_buy_price"] = harga
+                STATE["last_buy_time"] = time.time()
+                save_state()
         return
 
     # BUY SELANJUTNYA: HARUS TURUN 250 DARI KUNCI
     if LAST_BUY_PRICE_LOCK is None:
         LAST_BUY_PRICE_LOCK = STATE["last_buy_price"]
-    
+
     jarak = LAST_BUY_PRICE_LOCK - harga
-    
+
     if jarak >= GRID_JARAK: # 250
         if place_buy(harga):
-            LAST_BUY_PRICE_LOCK = harga # Geser kuncinya ke harga BUY baru
+            LAST_BUY_PRICE_LOCK = harga
+            STATE["last_buy_price"] = harga
+            STATE["last_buy_time"] = time.time()
+            save_state()
             log(f"KUNCI BUY DIGESER KE: {harga}")
     else:
         log(f"Nahan BUY. Jarak: ${jarak:.2f} / Butuh: ${GRID_JARAK}")
@@ -226,28 +217,36 @@ def cek_sell(price):
     return None
 
 def place_buy(price):
-    if price in BUYING_LOCK: return
+    if price in BUYING_LOCK: return False
     BUYING_LOCK.add(price)
     try:
         qty = hitung_qty_aman(price)
         usdt, _ = get_balance()
         butuh = hitung_butuh_modal(price, qty)
-        if usdt < butuh: return
+        if usdt < butuh:
+            log(f"Saldo kurang. Butuh ${butuh:.2f} Punya ${usdt:.2f}")
+            return False
         order_id = f"PAPER_{int(time.time())}"; fee = float(qty)*price*0.001
         if not STATE["paper_mode"]:
             res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
-            if 'orderId' not in res: return
+            if 'orderId' not in res: return False
             order_id = res['orderId']; qty = res['executedQty']; fee = sum([float(f['commission']) for f in res['fills']])
-        if STATE["paper_mode"]: STATE["paper_usdt"] -= float(qty)*price; STATE["paper_btc"] += float(qty)
+        if STATE["paper_mode"]:
+            STATE["paper_usdt"] -= float(qty)*price;
+            STATE["paper_btc"] += float(qty)
         save_state()
-        if not sb_insert({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee}): save_json({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee})
+        if not sb_insert({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee}):
+            save_json({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee})
         notif(f"🟢 <b>BUY TERISI</b>\nHarga: ${price:.2f}\nQty: {qty}\nButuh: ${butuh:.2f}")
+        return True
     finally: BUYING_LOCK.discard(price)
 
 def place_sell(data):
+    global LAST_BUY_PRICE_LOCK
     oid = data['order']['id']
     if oid in SELL_LOCK: return
     SELL_LOCK.add(oid); delete_ok = False
+    harga_jual = data['sell_price']
     try:
         _, btc = get_balance(); qty = format_qty(float(data['order']['qty']))
         if float(btc) < float(qty): return
@@ -256,19 +255,20 @@ def place_sell(data):
             if 'orderId' not in res: return
             fee = sum([float(f['commission']) for f in res['fills']])
         else:
-            fee = float(qty) * data['sell_price'] * 0.001
-            STATE["paper_usdt"] += float(qty) * data['sell_price'] - fee; STATE["paper_btc"] -= float(qty)
+            fee = float(qty) * harga_jual * 0.001
+            STATE["paper_usdt"] += float(qty) * harga_jual - fee; STATE["paper_btc"] -= float(qty)
         save_state()
         delete_ok = sb_delete(oid)
-        profit = (data['sell_price'] - float(data['order']['price'])) * float(qty) - fee - float(data['order']['fee'])
-        notif(f"🔴 <b>SELL TP</b>\nHarga: ${data['sell_price']:.2f}\nProfit: ${profit:.4f}")
-        if data['is_top']: place_buy(data['sell_price'])
+        profit = (harga_jual - float(data['order']['price'])) * float(qty) - fee - float(data['order']['fee'])
+        notif(f"🔴 <b>SELL TP</b>\nHarga: ${harga_jual:.2f}\nProfit: ${profit:.4f}")
+        if data['is_top']:
+            LAST_BUY_PRICE_LOCK = None
+            STATE["last_buy_price"] = None
+            save_state()
+            place_buy(harga_jual)
     finally:
         if delete_ok: SELL_LOCK.discard(oid)
-        if len(orders)==1: # kalau ini grid paling atas
-           LAST_BUY_PRICE_LOCK = None # Reset kunci biar bisa BUY dari awal lagi
-           place_buy(harga)
-            
+
 # ========== STATUS CANTIK ==========
 def kirim_status_cantik():
     usdt, btc = get_balance()
@@ -303,12 +303,11 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
 
 # ========== TELEGRAM ==========
 def kirim_keyboard():
-    # CUMA 1 TOMBOL STATUS
     keyboard = {"keyboard": [[{"text": "STATUS"}]], "resize_keyboard": True}
     requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={
-        "chat_id": TELE_CHAT_ID, 
-        "text": "✅ <b>Panel Kontrol Aktif</b>\n\n<b>Perintah Ketik:</b>\n`PAPER` = Mode Simulasi\n`RILL` = Mode Real\n`SILENT` = Notif Penting\n`NORMAL` = Notif Lengkap\n`STATUS` = Lihat Posisi", 
-        "parse_mode": "HTML", 
+        "chat_id": TELE_CHAT_ID,
+        "text": "✅ <b>Panel Kontrol Aktif</b>\n\n<b>Perintah Ketik:</b>\n`PAPER` = Mode Simulasi\n`RILL` = Mode Real\n`SILENT` = Notif Penting\n`NORMAL` = Notif Lengkap\n`STATUS` = Lihat Posisi",
+        "parse_mode": "HTML",
         "reply_markup": json.dumps(keyboard)
     })
 
@@ -320,22 +319,22 @@ def cek_tele():
         u = r['result'][-1]; text = u['message']['text'].strip().upper()
         if str(u['message']['chat']['id'])!= TELE_CHAT_ID: return
 
-        if text == "STATUS": 
+        if text == "STATUS":
             kirim_status_cantik()
-        elif text == "PAPER": 
+        elif text == "PAPER":
             STATE["paper_mode"]=True; save_state(); notif("🧪 <b>MODE PAPER AKTIF</b>\nSaldo Virtual: $10.000")
-        elif text == "RILL": 
+        elif text == "RILL":
             usdt, _ = get_balance()
             STATE["paper_mode"]=False; save_state(); notif(f"💰 <b>MODE RILL AKTIF</b>\nSaldo: ${usdt:.2f}\nHATI-HATI INI UANG BENERAN")
-        elif text == "SILENT": 
+        elif text == "SILENT":
             NOTIF_MODE = "SILENT"; notif("🔇 <b>MODE SILENT</b>\nCuma notif BUY/SELL/ERROR")
-        elif text == "NORMAL": 
+        elif text == "NORMAL":
             NOTIF_MODE = "NORMAL"; notif("🔊 <b>MODE NORMAL</b>\nNotifikasi Lengkap Aktif")
         else:
             notif("❓ Perintah tidak dikenal\nKetik: PAPER / RILL / SILENT / NORMAL / STATUS")
-            
+
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={u['update_id']+1}")
-    except Exception as e: 
+    except Exception as e:
         log(f"TELE ERROR: {repr(e)}")
 
 # ========== MAIN ==========
@@ -347,17 +346,16 @@ async def main():
         if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
         if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
 
-    notif(f"🤖 <b>BOT V14.2.0 AUTO CLEANUP</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
+    notif(f"🤖 <b>BOT V14.4.4 ANTI SPAM</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     kirim_keyboard()
 
     while True:
         try:
-            sync_binance(); cek_tele() # sync sekarang ada cleanup
+            sync_binance(); cek_tele()
             for d in load_json(): sb_insert(d)
             price = get_price()
-            buy_sig, buy_price = cek_buy(price);
-            if buy_sig: place_buy(buy_price)
-            sell_sig = cek_sell(price);
+            cek_buy(price)
+            sell_sig = cek_sell(price)
             if sell_sig: place_sell(sell_sig)
             gc.collect(); await asyncio.sleep(LOOP_SEC)
         except Exception as e: notif(f"❌ <b>ERROR</b>\n<code>{repr(e)}</code>"); await asyncio.sleep(10)
