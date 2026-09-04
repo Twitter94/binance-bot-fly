@@ -75,6 +75,10 @@ def hitung_qty_aman(harga):
     return format_qty(qty)
 def hitung_butuh_modal(price, qty): modal = price * float(qty); fee_1x = modal * 0.001; buffer = fee_1x * 5; return modal + fee_1x + fee_1x + buffer
 
+# TAMBAHAN 1: BULETIN HARGA KE GRID
+def to_grid(harga):
+    return round(round(harga / GRID_JARAK) * GRID_JARAK, 2)
+
 # ========== SUPABASE ==========
 def auto_setup_supabase():
     log("CEK TABEL SUPABASE...")
@@ -151,7 +155,7 @@ def get_balance():
     except:
         return 0.0, 0.0
 
-def sync_binance(): # INI GUA BALIKIN
+def sync_binance():
     global LAST_SYNC
     if time.time() - LAST_SYNC < 10: return
     LAST_SYNC = time.time()
@@ -174,9 +178,9 @@ def sync_binance(): # INI GUA BALIKIN
             if sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": oid, "fee": fee, "time": int(o['time']/1000)}):
                 notif(f"[RILL] RECOVERY: BUY {harga:.2f}")
 
-def cek_buy(harga):
+def cek_buy(harga_asli):
     global STATE
-    harga = round(harga, 2)
+    harga = to_grid(harga_asli) # UBAH 1: BULETIN DULU
 
     if len(sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{harga}")) > 0: return # Cegah dobel
 
@@ -198,7 +202,7 @@ def cek_sell(price):
     return to_sell
 
 def place_buy(price):
-    price = round(price, 2)
+    price = to_grid(price) # UBAH 2: BULETIN JUGA DISINI
     if price in BUYING_LOCK: return False
     BUYING_LOCK.add(price)
     try:
@@ -245,11 +249,11 @@ def place_sell(data):
         profit = (harga_jual - float(data['order']['price'])) * float(qty) - fee - float(data['order']['fee'])
         notif(f"🔴 <b>SELL TP</b>\nBuy: ${float(data['order']['price']):.2f} -> Sell: ${harga_jual:.2f}\nProfit: ${profit:.4f}")
         if data['is_top']: # INI KUNCI GRID INFINITE
-            place_buy(harga_jual)
+            place_buy(to_grid(harga_jual)) # UBAH 3: BULETIN HARGA JUAL JUGA
     finally:
         if delete_ok: SELL_LOCK.discard(oid)
 
-# ========== STATUS CANTIK ========== # INI GUA BALIKIN
+# ========== STATUS CANTIK ==========
 def kirim_status_cantik():
     usdt, btc = get_balance()
     price = get_price()
@@ -278,7 +282,7 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
         msg += "</code>"
     notif(msg)
 
-# ========== TELEGRAM ========== # INI GUA BALIKIN
+# ========== TELEGRAM ==========
 def kirim_keyboard():
     keyboard = {"keyboard": [[{"text": "STATUS"}]], "resize_keyboard": True}
     requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={
@@ -291,7 +295,7 @@ def kirim_keyboard():
 def cek_tele():
     global NOTIF_MODE
     try:
-        r = requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates", timeout=3).json()
+        r = requests.get(f"{TELE_TOKEN}/getUpdates", timeout=3).json()
         if not r.get('result'): return
         u = r['result'][-1]; text = u['message']['text'].strip().upper()
         if str(u['message']['chat']['id'])!= TELE_CHAT_ID: return
@@ -323,13 +327,13 @@ async def main():
         if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
         if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
 
-    notif(f"🤖 <b>BOT V14.4.9 GRID INFINITE FIX</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
+    notif(f"🤖 <b>BOT V14.4.10 ANTI DOBEL</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     kirim_keyboard()
 
     while True:
         try:
-            sync_binance(); cek_tele() # INI GUA BALIKIN
-            for d in load_json(): sb_insert(d) # INI GUA BALIKIN
+            sync_binance(); cek_tele()
+            for d in load_json(): sb_insert(d)
             price = get_price()
             cek_buy(price)
             for sig in cek_sell(price): place_sell(sig)
