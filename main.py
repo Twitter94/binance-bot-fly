@@ -37,14 +37,12 @@ WIB = timezone(timedelta(hours=7))
 # ========== GLOBAL ==========
 STATE = {
     "paper_mode": True,
-    "paper_usdt": 100.0,
+    "paper_usdt": 10000.0,
     "paper_btc": 0.0,
-    "last_buy_price": None,
     "last_buy_time": 0
 }
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 BUYING_LOCK = set(); SELL_LOCK = set(); START_TIME = time.time(); LAST_SYNC = 0
-LAST_BUY_PRICE_LOCK = None # Harga patokan buat turun 250
 
 # ========== UTIL ==========
 def log(msg):
@@ -99,7 +97,6 @@ def load_state():
             STATE["paper_mode"] = data.get("paper_mode", True)
             STATE["paper_usdt"] = data.get("paper_usdt", 10000.0)
             STATE["paper_btc"] = data.get("paper_btc", 0.0)
-            STATE["last_buy_price"] = data.get("last_buy_price", None)
             STATE["last_buy_time"] = data.get("last_buy_time", 0)
             log("STATE LOADED")
     except Exception as e: log(f"LOAD STATE ERROR: {e}")
@@ -154,9 +151,9 @@ def get_balance():
     except:
         return 0.0, 0.0
 
-def sync_binance(): # AUTO CLEANUP ADA DISINI
+def sync_binance(): # INI GUA BALIKIN
     global LAST_SYNC
-    if time.time() - LAST_SYNC < 10: return # 10 detik sekali
+    if time.time() - LAST_SYNC < 10: return
     LAST_SYNC = time.time()
     if STATE["paper_mode"]: return
 
@@ -178,63 +175,34 @@ def sync_binance(): # AUTO CLEANUP ADA DISINI
                 notif(f"[RILL] RECOVERY: BUY {harga:.2f}")
 
 def cek_buy(harga):
-    global LAST_BUY_PRICE_LOCK, STATE
+    global STATE
+    harga = round(harga, 2)
 
-    harga = round(harga, 2) # Bulatkan biar 80000.01 = 80000.00
+    if len(sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{harga}")) > 0: return # Cegah dobel
 
-    # RULE 1: CEK DULU APAKAH DI HARGA INI UDAH ADA POSISI
-    data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{harga}")
-    if len(data_open) > 0:
-        log(f"Nahan BUY. Harga ${harga} sudah ada posisi")
+    data_atas = sb_select("status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
+    if not data_atas:
+        if time.time() - STATE["last_buy_time"] > WAIT_FIRST_BUY: place_buy(harga)
         return
 
-    # RULE 2: BUY PERTAMA
-    if STATE["last_buy_price"] is None:
-        if time.time() - STATE["last_buy_time"] > WAIT_FIRST_BUY:
-            if place_buy(harga):
-                LAST_BUY_PRICE_LOCK = harga
-                STATE["last_buy_price"] = harga
-                STATE["last_buy_time"] = time.time()
-                save_state()
-        return
-
-    # RULE 3: BUY SELANJUTNYA HARUS TURUN 250 DARI KUNCI
-    if LAST_BUY_PRICE_LOCK is None:
-        LAST_BUY_PRICE_LOCK = STATE["last_buy_price"]
-
-    jarak = LAST_BUY_PRICE_LOCK - harga
-
-    if jarak >= GRID_JARAK: # 250
-        if place_buy(harga):
-            LAST_BUY_PRICE_LOCK = harga
-            STATE["last_buy_price"] = harga
-            STATE["last_buy_time"] = time.time()
-            save_state()
-            log(f"KUNCI BUY DIGESER KE: {harga}")
-    else:
-        log(f"Nahan BUY. Jarak: ${jarak:.2f} / Butuh: ${GRID_JARAK}")
+    if float(data_atas[0]['price']) - harga >= GRID_JARAK: # Turun 250 dari atas
+        place_buy(harga)
 
 def cek_sell(price):
-    data_open = sb_select("status=eq.OPEN&side=eq.BUY&order=price.asc&limit=1")
-    if not data_open: return None
-    order = data_open[0]
-    if price >= float(order['price']) + GRID_JARAK:
-        data_tertinggi = sb_select("status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
-        is_top = order['id'] == data_tertinggi[0]['id'] if data_tertinggi else False
-        return {"order": order, "sell_price": price, "is_top": is_top}
-    return None
+    to_sell = []
+    for order in sb_select("status=eq.OPEN&side=eq.BUY"):
+        if price >= float(order['price']) + GRID_JARAK:
+            data_atas = sb_select("status=eq.OPEN&side=eq.BUY&order=price.desc&limit=1")
+            is_top = order['id'] == data_atas[0]['id']
+            to_sell.append({"order": order, "sell_price": price, "is_top": is_top})
+    return to_sell
 
 def place_buy(price):
-    price = round(price, 2) # SAMAIN PEMBULATAN
+    price = round(price, 2)
     if price in BUYING_LOCK: return False
     BUYING_LOCK.add(price)
     try:
-        # DOUBLE CHECK SEBELUM EKSEKUSI
-        data_open = sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{price}")
-        if len(data_open) > 0:
-            log(f"BATAL BUY. Harga ${price} keduluan ada posisi")
-            return False
-
+        if len(sb_select(f"status=eq.OPEN&side=eq.BUY&price=eq.{price}")) > 0: return False
         qty = hitung_qty_aman(price)
         usdt, _ = get_balance()
         butuh = hitung_butuh_modal(price, qty)
@@ -249,7 +217,7 @@ def place_buy(price):
         if STATE["paper_mode"]:
             STATE["paper_usdt"] -= float(qty)*price;
             STATE["paper_btc"] += float(qty)
-        save_state()
+        STATE["last_buy_time"] = time.time(); save_state()
         if not sb_insert({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee}):
             save_json({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee})
         notif(f"🟢 <b>BUY TERISI</b>\nHarga: ${price:.2f}\nQty: {qty}\nButuh: ${butuh:.2f}")
@@ -257,7 +225,7 @@ def place_buy(price):
     finally: BUYING_LOCK.discard(price)
 
 def place_sell(data):
-    global LAST_BUY_PRICE_LOCK
+    global STATE
     oid = data['order']['id']
     if oid in SELL_LOCK: return
     SELL_LOCK.add(oid); delete_ok = False
@@ -275,16 +243,13 @@ def place_sell(data):
         save_state()
         delete_ok = sb_delete(oid)
         profit = (harga_jual - float(data['order']['price'])) * float(qty) - fee - float(data['order']['fee'])
-        notif(f"🔴 <b>SELL TP</b>\nHarga: ${harga_jual:.2f}\nProfit: ${profit:.4f}")
-        if data['is_top']:
-            LAST_BUY_PRICE_LOCK = None
-            STATE["last_buy_price"] = None
-            save_state()
+        notif(f"🔴 <b>SELL TP</b>\nBuy: ${float(data['order']['price']):.2f} -> Sell: ${harga_jual:.2f}\nProfit: ${profit:.4f}")
+        if data['is_top']: # INI KUNCI GRID INFINITE
             place_buy(harga_jual)
     finally:
         if delete_ok: SELL_LOCK.discard(oid)
 
-# ========== STATUS CANTIK ==========
+# ========== STATUS CANTIK ========== # INI GUA BALIKIN
 def kirim_status_cantik():
     usdt, btc = get_balance()
     price = get_price()
@@ -295,7 +260,7 @@ def kirim_status_cantik():
     mode_db = "PAPER" if STATE["paper_mode"] else "RILL"
     tanggal = datetime.now(WIB).strftime("%d_%m_%Y")
 
-    msg = f"""<b>SAFANA {tanggal}</b>
+    msg = f"""<b>SAFANA GRID {tanggal}</b>
 
 {emoji_status} <i>{status_txt}</i> | Mode: <i>{mode_txt}</i> | DB: <i>{mode_db}</i>
 Harga: ${price:.2f} | Grid: ${GRID_JARAK:.2f}
@@ -304,10 +269,7 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
 
     if len(data_open) > 0:
         msg += "\n\n<i>DETAIL POSISI</i>\n"
-        msg += "<code>"
-        msg += "--------------------\n"
-        msg += "No | BUY | TP\n"
-        msg += "--------------------\n"
+        msg += "<code>--------------------\nNo | BUY | TP\n--------------------\n"
         no = 1
         for d in data_open:
             tp = float(d['price']) + GRID_JARAK
@@ -316,12 +278,12 @@ Posisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
         msg += "</code>"
     notif(msg)
 
-# ========== TELEGRAM ==========
+# ========== TELEGRAM ========== # INI GUA BALIKIN
 def kirim_keyboard():
     keyboard = {"keyboard": [[{"text": "STATUS"}]], "resize_keyboard": True}
     requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={
         "chat_id": TELE_CHAT_ID,
-        "text": "✅ <b>Panel Kontrol Aktif</b>\n\n<b>Perintah Ketik:</b>\n`PAPER` = Mode Simulasi\n`RILL` = Mode Real\n`SILENT` = Notif Penting\n`NORMAL` = Notif Lengkap\n`STATUS` = Lihat Posisi",
+        "text": "✅ <b>Panel Kontrol Grid</b>\n\n<b>Perintah Ketik:</b>\n`PAPER` = Mode Simulasi\n`RILL` = Mode Real\n`SILENT` = Notif Penting\n`NORMAL` = Notif Lengkap\n`STATUS` = Lihat Posisi",
         "parse_mode": "HTML",
         "reply_markup": json.dumps(keyboard)
     })
@@ -361,17 +323,16 @@ async def main():
         if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
         if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
 
-    notif(f"🤖 <b>BOT V14.4.5 ANTI DOBEL HARGA</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
+    notif(f"🤖 <b>BOT V14.4.9 GRID INFINITE FIX</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     kirim_keyboard()
 
     while True:
         try:
-            sync_binance(); cek_tele()
-            for d in load_json(): sb_insert(d)
+            sync_binance(); cek_tele() # INI GUA BALIKIN
+            for d in load_json(): sb_insert(d) # INI GUA BALIKIN
             price = get_price()
             cek_buy(price)
-            sell_sig = cek_sell(price)
-            if sell_sig: place_sell(sell_sig)
+            for sig in cek_sell(price): place_sell(sig)
             gc.collect(); await asyncio.sleep(LOOP_SEC)
         except Exception as e: notif(f"❌ <b>ERROR</b>\n<code>{repr(e)}</code>"); await asyncio.sleep(10)
 
