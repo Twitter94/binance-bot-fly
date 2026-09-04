@@ -85,15 +85,44 @@ def auto_setup_supabase():
         requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}", headers=SB_HEADERS, json={"id":1, **STATE})
         notif("✅ Tabel `bot_state` siap")
 
-def load_state(): 
+STATE = {
+    "paper_mode": True, 
+    "paper_usdt": 10000.0, 
+    "paper_btc": 0.0,
+    "last_buy_price": None, # TAMBAH INI
+    "last_buy_time": 0 # TAMBAH INI
+}
+
+def load_state():
     global STATE
-    try: STATE = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS).json()[0]
-    except: pass
+    try:
+        r = requests.get(f"{SUPA_URL}/rest/v1/bot_state?id=eq.1", headers=HEADERS).json()
+        if r:
+            data = r[0]['data']
+            #.get biar gak error kalau key belum ada
+            STATE["paper_mode"] = data.get("paper_mode", True)
+            STATE["paper_usdt"] = data.get("paper_usdt", 10000.0)
+            STATE["paper_btc"] = data.get("paper_btc", 0.0)
+            STATE["last_buy_price"] = data.get("last_buy_price", None) # ANTI KEYERROR
+            STATE["last_buy_time"] = data.get("last_buy_time", 0) # ANTI KEYERROR
+            log("STATE LOADED")
+    except: log("STATE BARU DIBUAT")
 
-def save_state(): 
-    try: requests.patch(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, json=STATE)
-    except: pass
-
+def save_state():
+    try:
+        data = {
+            "id": 1,
+            "data": {
+                "paper_mode": STATE["paper_mode"],
+                "paper_usdt": STATE["paper_usdt"],
+                "paper_btc": STATE["paper_btc"],
+                "last_buy_price": STATE["last_buy_price"], # SIMPAN JUGA
+                "last_buy_time": STATE["last_buy_time"] # SIMPAN JUGA
+            }
+        }
+        requests.post(f"{SUPA_URL}/rest/v1/bot_state", headers=HEADERS, data=json.dumps(data))
+    except Exception as e: log(f"SAVE STATE ERROR: {e}")
+        
 def sb_select(filters=""):
     try:
         mode = "PAPER" if STATE["paper_mode"] else "RILL"
