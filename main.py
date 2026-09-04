@@ -62,7 +62,12 @@ def signed_request(method, endpoint, params=None):
 
 def get_price(): return float(requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=5).json()['price'])
 def format_qty(qty): step = BINANCE_RULES['step_size']; qty = math.floor(qty / step) * step; return f"{qty:.8f}".rstrip('0').rstrip('.')
-def hitung_qty_aman(harga): step = BINANCE_RULES['step_size']; qty = 5.1 / harga; while harga * float(format_qty(qty)) < 5.01: qty += step; return format_qty(qty)
+def hitung_qty_aman(harga):
+    step = BINANCE_RULES['step_size']
+    qty = 5.1 / harga
+    while harga * float(format_qty(qty)) < 5.01:
+        qty += step
+    return format_qty(qty)
 def hitung_butuh_modal(price, qty): modal = price * float(qty); fee_1x = modal * 0.001; buffer = fee_1x * 5; return modal + fee_1x + fee_1x + buffer
 
 # ========== SUPABASE ==========
