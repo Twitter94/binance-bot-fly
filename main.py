@@ -236,7 +236,10 @@ def place_sell(data):
         if data['is_top']: place_buy(data['sell_price'])
     finally:
         if delete_ok: SELL_LOCK.discard(oid)
-
+        if len(orders)==1: # kalau ini grid paling atas
+           LAST_BUY_PRICE_LOCK = None # Reset kunci biar bisa BUY dari awal lagi
+           place_buy(harga)
+            
 # ========== STATUS CANTIK ==========
 def kirim_status_cantik():
     usdt, btc = get_balance()
