@@ -230,6 +230,7 @@ def place_buy(price):
         return True
     finally: BUYING_LOCK.discard(price)
 
+# ========== FIX JUAL HABIS 100% ==========
 def place_sell(data):
     global STATE
     oid = data['order']['id']
@@ -237,20 +238,32 @@ def place_sell(data):
     SELL_LOCK.add(oid); delete_ok = False
     harga_jual = data['sell_price']
     try:
-        _, btc = get_balance(); qty = format_qty(float(data['order']['qty']))
-        if float(btc) < float(qty): return
+        _, btc = get_balance()
+        qty = float(data['order']['qty']) # AMBIL LANGSUNG DARI DB. JANGAN DI FORMAT LAGI
+
+        if float(btc) < qty:
+            log(f"Saldo BTC kurang. Butuh {qty} Punya {btc}")
+            return
+
         if not STATE["paper_mode"]:
-            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity":qty})
-            if 'orderId' not in res: return
+            res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity": f"{qty:.8f}"}) # KIRIM 8 DESIMAL
+            if 'orderId' not in res:
+                log(f"GAGAL SELL: {res}")
+                return
             fee = sum([float(f['commission']) for f in res['fills']])
+            qty_terjual = float(res['executedQty']) # IKUTIN YG BENERAN KEJUAL
         else:
-            fee = float(qty) * harga_jual * 0.001
-            STATE["paper_usdt"] += float(qty) * harga_jual - fee; STATE["paper_btc"] -= float(qty)
+            qty_terjual = qty
+            fee = qty_terjual * harga_jual * 0.001
+            STATE["paper_usdt"] += qty_terjual * harga_jual - fee
+            STATE["paper_btc"] -= qty_terjual
+
         save_state()
         delete_ok = sb_delete(oid)
-        profit = (harga_jual - float(data['order']['price'])) * float(qty) - fee - float(data['order']['fee'])
-        notif(f"🔴 <b>SELL TP</b>\nBuy: ${float(data['order']['price']):.2f} -> Sell: ${harga_jual:.2f}\nProfit: ${profit:.4f}")
-        if data['is_top']: # RE-ENTRY DARI HARGA TP
+        profit = (harga_jual - float(data['order']['price'])) * qty_terjual - fee - float(data['order']['fee'])
+        notif(f"🔴 <b>SELL TP HABIS</b>\nBuy: ${float(data['order']['price']):.2f} -> Sell: ${harga_jual:.2f}\nQty: {qty_terjual:.8f}\nProfit: ${profit:.4f}")
+
+        if data['is_top']:
             place_buy(to_grid(harga_jual))
     finally:
         if delete_ok: SELL_LOCK.discard(oid)
@@ -329,7 +342,7 @@ async def main():
         if f['filterType']=='MIN_NOTIONAL': BINANCE_RULES['min_notional']=float(f['minNotional'])
         if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
 
-    notif(f"🤖 <b>BOT V14.4.11 BUY DARI ATAS</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
+    notif(f"🤖 <b>BOT V14.4.12 JUAL HABIS FIX</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     kirim_keyboard()
 
     while True:
