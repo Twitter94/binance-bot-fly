@@ -37,7 +37,7 @@ WIB = timezone(timedelta(hours=7))
 # ========== GLOBAL ==========
 STATE = {
     "paper_mode": True,
-    "paper_usdt": 10000.0,
+    "paper_usdt": 100.0,
     "paper_btc": 0.0,
     "last_buy_time": 0
 }
