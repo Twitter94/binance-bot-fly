@@ -24,8 +24,7 @@ for v in ["API_KEY", "API_SECRET", "SUPA_URL", "SUPA_KEY", "TELE_TOKEN", "TELE_C
 SYMBOL = "BTCUSDT"
 GRID_JARAK = 250
 LOOP_SEC = 3
-TABEL_PAPER = "orders_paper" # PISAH TABEL
-TABEL_RILL = "orders_rill" # PISAH TABEL
+TABEL = "orders"
 TABEL_STATE = "bot_state"
 JSON_FILE = "pending_orders.json"
 WAIT_FIRST_BUY = 60
@@ -36,11 +35,9 @@ SB_HEADERS_DELETE = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE
 WIB = timezone(timedelta(hours=7))
 
 # ========== GLOBAL ==========
-STATE = {"mode": "PAPER", "paper_usdt": 100.0, "paper_btc": 0.0, "last_buy_time": 0} # GANTI paper_mode -> mode
+STATE = {"paper_mode": True, "paper_usdt": 10000.0, "paper_btc": 0.0, "last_buy_time": 0}
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 BUYING_LOCK = set(); SELL_LOCK = set(); START_TIME = time.time(); LAST_SYNC = 0
-
-def get_tabel(): return TABEL_PAPER if STATE["mode"] == "PAPER" else TABEL_RILL # KUNCI: PILIH TABEL OTOMATIS
 
 # ========== UTIL ==========
 def log(msg):
@@ -62,10 +59,13 @@ def signed_request(method, endpoint, params=None):
     url = f"{BASE_URL}{endpoint}?{query_string}&signature={signature}"
     try:
         r = requests.request(method, url, headers={'X-MBX-APIKEY': BINANCE_API_KEY}, timeout=10)
+        if r.status_code!= 200:
+            log(f"BINANCE ERROR {r.status_code}: {r.text}")
+            return {"code": r.status_code, "msg": r.text} # PENTING: JANGAN BALIKIN STRING
         return r.json()
-    except: return {"code": -1, "msg": "Request timeout"}
+    except Exception as e: return {"code": -1, "msg": str(e)}
 
-def get_price(): 
+def get_price():
     try: return float(requests.get(f"{BASE_URL}/api/v3/ticker/price?symbol={SYMBOL}", timeout=5).json()['price'])
     except: return 80000.0
 def format_qty(qty): step = BINANCE_RULES['step_size']; qty = math.floor(qty / step) * step; return f"{qty:.8f}".rstrip('0').rstrip('.')
@@ -80,20 +80,15 @@ def to_grid(harga): return round(round(harga / GRID_JARAK) * GRID_JARAK, 2)
 # ========== SUPABASE ==========
 def auto_setup_supabase():
     log("CEK TABEL SUPABASE...")
-    for TABEL in [TABEL_PAPER, TABEL_RILL]:
-        try:
-            r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?limit=1", headers=SB_HEADERS, timeout=5)
-            if r.status_code!= 200:
-                requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json={"price":0,"qty":0,"side":"INIT","status":"INIT","binance_order_id":"INIT","fee":0,"mode":"INIT"})
-                requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=neq.0", headers=SB_HEADERS_DELETE)
-                notif(f"✅ Tabel `{TABEL}` siap")
-        except Exception as e: log(f"SETUP ERROR {TABEL}: {e}")
-    try:
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, timeout=5)
-        if r.status_code!= 200 or not r.json():
-            requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}", headers=SB_HEADERS, json={"id":1, "data": STATE})
-            notif("✅ Tabel `bot_state` siap")
-    except Exception as e: log(f"SETUP STATE ERROR: {e}")
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?limit=1", headers=SB_HEADERS, timeout=5)
+    if r.status_code!= 200:
+        requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json={"price":0,"qty":0,"side":"INIT","status":"INIT","binance_order_id":"INIT","fee":0,"mode":"INIT"})
+        requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=neq.0", headers=SB_HEADERS_DELETE)
+        notif("✅ Tabel `orders` siap")
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, timeout=5)
+    if r.status_code!= 200 or not r.json():
+        requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}", headers=SB_HEADERS, json={"id":1, "data": STATE})
+        notif("✅ Tabel `bot_state` siap")
 
 def load_state():
     global STATE
@@ -101,11 +96,11 @@ def load_state():
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, timeout=5).json()
         if r:
             data = r[0]['data']
-            STATE["mode"] = data.get("mode", "PAPER") # LOAD MODE
+            STATE["paper_mode"] = data.get("paper_mode", True)
             STATE["paper_usdt"] = data.get("paper_usdt", 10000.0)
             STATE["paper_btc"] = data.get("paper_btc", 0.0)
             STATE["last_buy_time"] = data.get("last_buy_time", 0)
-            log(f"STATE LOADED: MODE {STATE['mode']}")
+            log(f"STATE LOADED: MODE {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     except Exception as e: log(f"LOAD STATE ERROR: {e}")
 
 def save_state():
@@ -116,23 +111,21 @@ def save_state():
 
 def sb_select(filters=""):
     try:
-        TABEL = get_tabel() # AMBIL TABEL SESUAI MODE
-        if filters: filters += f"&status=neq.ZOMBIE"
-        else: filters = f"status=neq.ZOMBIE"
+        mode = "PAPER" if STATE["paper_mode"] else "RILL"
+        if filters: filters += f"&mode=eq.{mode}&status=neq.ZOMBIE"
+        else: filters = f"mode=eq.{mode}&status=neq.ZOMBIE"
         return requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL}?{filters}", headers=SB_HEADERS, timeout=5).json()
     except: return []
 
 def sb_insert(data):
     try:
-        TABEL = get_tabel()
-        data['mode'] = STATE["mode"]
+        data['mode'] = "PAPER" if STATE["paper_mode"] else "RILL"
         data['price'] = float(data['price']); data['qty'] = float(data['qty']); data['fee'] = float(data.get('fee', 0))
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL}", headers=SB_HEADERS, json=data, timeout=5)
         return r.json() if r.status_code in [200, 201] else []
     except: return []
 
 def sb_delete(order_id):
-    TABEL = get_tabel()
     for i in range(5):
         try:
             if requests.delete(f"{SUPABASE_URL}/rest/v1/{TABEL}?id=eq.{order_id}", headers=SB_HEADERS_DELETE, timeout=10).status_code == 204: return True
@@ -143,17 +136,19 @@ def sb_delete(order_id):
 
 def save_json(data):
     pending = json.load(open(JSON_FILE)) if os.path.exists(JSON_FILE) else []
+    data['mode'] = "PAPER" if STATE["paper_mode"] else "RILL"
     pending.append(data); json.dump(pending, open(JSON_FILE, 'w'))
 
 def load_json():
     if not os.path.exists(JSON_FILE): return []
-    data = json.load(open(JSON_FILE)); os.remove(JSON_FILE); return data
+    data = json.load(open(JSON_FILE)); os.remove(JSON_FILE); return [d for d in data if d.get('mode') == ("PAPER" if STATE["paper_mode"] else "RILL")]
 
 # ========== CORE ==========
 def get_balance():
-    if STATE["mode"] == "PAPER": return STATE["paper_usdt"], STATE["paper_btc"] # SALDO PAPER PISAH
+    if STATE["paper_mode"]: return STATE["paper_usdt"], STATE["paper_btc"]
     try:
         data = signed_request("GET", "/api/v3/account")
+        if 'code' in data: return 0.0, 0.0 # KALAU ERROR BALIK 0
         usdt = float(next((b['free'] for b in data.get('balances',[]) if b['asset']=='USDT'), 0))
         btc = float(next((b['free'] for b in data.get('balances',[]) if b['asset']=='BTC'), 0))
         return usdt, btc
@@ -163,21 +158,27 @@ def sync_binance():
     global LAST_SYNC
     if time.time() - LAST_SYNC < 10: return
     LAST_SYNC = time.time()
-    if STATE["mode"] == "PAPER": return # PAPER GAK SYNC BINANCE
+    if STATE["paper_mode"]: return
 
     try:
-        TABEL = get_tabel()
         data_db = sb_select("status=eq.OPEN&side=eq.BUY")
         db_ids = {str(d['binance_order_id']): d for d in data_db if str(d['binance_order_id']).isdigit()}
         binance_orders = signed_request("GET", "/api/v3/allOrders", {"symbol":SYMBOL, "limit": 500})
+
+        if 'code' in binance_orders: # CEK ERROR DULU
+            log(f"SYNC SKIP: {binance_orders.get('msg')}")
+            return
+
         binance_ids = {str(o['orderId']) for o in binance_orders}
         for oid, data in db_ids.items():
             if oid not in binance_ids:
-                if sb_delete(data['id']): notif(f"🧹 AUTO CLEANUP: Hapus order nyangkut {data['price']:.2f}")
+                if sb_delete(data['id']): notif(f"🧹 AUTO CLEANUP RILL: Hapus order nyangkut {data['price']:.2f}")
         for o in binance_orders:
             oid = str(o['orderId'])
             if o['side']=='BUY' and o['status']=='FILLED' and oid not in db_ids:
-                harga = float(o['fills'][0]['price']); qty = float(o['executedQty']); fee = sum([float(f['commission']) for f in o.get('fills',[])])
+                fills = o.get('fills', [])
+                if not fills: continue # AMANIN
+                harga = float(fills[0]['price']); qty = float(o['executedQty']); fee = sum([float(f['commission']) for f in fills])
                 if sb_insert({"price":harga, "qty":qty, "side":"BUY", "status":"OPEN", "binance_order_id": oid, "fee": fee, "time": int(o['time']/1000)}):
                     notif(f"[RILL] RECOVERY: BUY {harga:.2f}")
     except Exception as e: log(f"SYNC ERROR: {e}")
@@ -192,7 +193,7 @@ def cek_buy(harga_asli):
         return
     harga_grid_teratas = float(data_atas[0]['price'])
     if harga_grid_teratas - harga >= GRID_JARAK: place_buy(harga)
-    else: log(f"Nahan BUY. Atas: {harga_grid_teratas} | Skrg: {harga} | Jarak: {harga_grid_teratas - harga}")
+    else: log(f"[{('PAPER' if STATE['paper_mode'] else 'RILL')}] Nahan BUY. Atas: {harga_grid_teratas} | Skrg: {harga}")
 
 def cek_sell(price):
     to_sell = []
@@ -213,21 +214,21 @@ def place_buy(price):
         usdt, _ = get_balance()
         butuh = hitung_butuh_modal(price, qty)
         if usdt < butuh:
-            log(f"Saldo kurang. Butuh ${butuh:.2f} Punya ${usdt:.2f}")
+            log(f"[{('PAPER' if STATE['paper_mode'] else 'RILL')}] Saldo kurang. Butuh ${butuh:.2f} Punya ${usdt:.2f}")
             return False
         order_id = f"PAPER_{int(time.time())}"; fee = float(qty)*price*0.001
-        if STATE["mode"] == "RILL":
+        if not STATE["paper_mode"]:
             res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"BUY", "type":"MARKET", "quantity":qty})
-            if 'orderId' not in res: 
+            if 'orderId' not in res:
                 notif(f"❌ GAGAL BUY RILL: {res.get('msg', res)}")
                 return False
             order_id = res['orderId']; qty = res['executedQty']; fee = sum([float(f['commission']) for f in res.get('fills', [])])
-        else: # PAPER
+        else:
             STATE["paper_usdt"] -= float(qty)*price; STATE["paper_btc"] += float(qty)
         STATE["last_buy_time"] = time.time(); save_state()
         if not sb_insert({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee}):
             save_json({"price":price, "qty":float(qty), "side":"BUY", "status":"OPEN", "binance_order_id": order_id, "fee": fee})
-        notif(f"🟢 <b>BUY TERISI [{STATE['mode']}]</b>\nHarga: ${price:.2f}\nQty: {qty}\nButuh: ${butuh:.2f}")
+        notif(f"🟢 <b>BUY TERISI [{('PAPER' if STATE['paper_mode'] else 'RILL')}]</b>\nHarga: ${price:.2f}\nQty: {qty}\nButuh: ${butuh:.2f}")
         return True
     except Exception as e: notif(f"❌ ERROR BUY: {e}")
     finally: BUYING_LOCK.discard(price)
@@ -242,16 +243,16 @@ def place_sell(data):
         _, btc = get_balance()
         qty = float(data['order']['qty'])
         if float(btc) < qty:
-            log(f"Saldo BTC kurang. Butuh {qty} Punya {btc}")
+            log(f"[{('PAPER' if STATE['paper_mode'] else 'RILL')}] Saldo BTC kurang. Butuh {qty} Punya {btc}")
             return
-        if STATE["mode"] == "RILL":
+        if not STATE["paper_mode"]:
             res = signed_request("POST", "/api/v3/order", {"symbol":SYMBOL, "side":"SELL", "type":"MARKET", "quantity": f"{qty:.8f}"})
             if 'orderId' not in res:
                 notif(f"❌ GAGAL SELL RILL: {res.get('msg', res)}")
                 return
             fee = sum([float(f['commission']) for f in res.get('fills', [])])
             qty_terjual = float(res['executedQty'])
-        else: # PAPER
+        else:
             qty_terjual = qty
             fee = qty_terjual * harga_jual * 0.001
             STATE["paper_usdt"] += qty_terjual * harga_jual - fee
@@ -259,13 +260,12 @@ def place_sell(data):
         save_state()
         delete_ok = sb_delete(oid)
         profit = (harga_jual - float(data['order']['price'])) * qty_terjual - fee - float(data['order']['fee'])
-        notif(f"🔴 <b>SELL TP HABIS [{STATE['mode']}]</b>\nBuy: ${float(data['order']['price']):.2f} -> Sell: ${harga_jual:.2f}\nQty: {qty_terjual:.8f}\nProfit: ${profit:.4f}")
+        notif(f"🔴 <b>SELL TP HABIS [{('PAPER' if STATE['paper_mode'] else 'RILL')}]</b>\nBuy: ${float(data['order']['price']):.2f} -> Sell: ${harga_jual:.2f}\nQty: {qty_terjual:.8f}\nProfit: ${profit:.4f}")
         if data['is_top']: place_buy(to_grid(harga_jual))
     except Exception as e: notif(f"❌ ERROR SELL: {e}")
     finally:
         if delete_ok: SELL_LOCK.discard(oid)
 
-# ========== STATUS CANTIK ==========
 def kirim_status_cantik():
     try:
         usdt, btc = get_balance()
@@ -274,8 +274,9 @@ def kirim_status_cantik():
         status_txt = "PAUSE" if usdt < hitung_butuh_modal(price, hitung_qty_aman(price)) else "JALAN"
         emoji_status = "🔴" if status_txt=="PAUSE" else "🟢"
         mode_txt = "SILENT" if NOTIF_MODE == "SILENT" else "NORMAL"
+        mode_db = "PAPER" if STATE["paper_mode"] else "RILL"
         tanggal = datetime.now(WIB).strftime("%d_%m_%Y")
-        msg = f"""<b>SAFANA GRID {tanggal}</b>\n\n{emoji_status} <i>{status_txt}</i> | Mode: <i>{mode_txt}</i> | DB: <i>{STATE['mode']}</i>\nHarga: ${price:.2f} | Grid: ${GRID_JARAK:.2f}\nSaldo: ${usdt:.2f} | Butuh: ${hitung_butuh_modal(price, hitung_qty_aman(price)):.2f}\nPosisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
+        msg = f"""<b>SAFANA GRID {tanggal}</b>\n\n{emoji_status} <i>{status_txt}</i> | Mode Notif: <i>{mode_txt}</i> | Mode Bot: <i>{mode_db}</i>\nHarga: ${price:.2f} | Grid: ${GRID_JARAK:.2f}\nSaldo: ${usdt:.2f} | Butuh: ${hitung_butuh_modal(price, hitung_qty_aman(price)):.2f}\nPosisi: {len(data_open)} Grid | BTC: {btc:.8f}"""
         if len(data_open) > 0:
             msg += "\n\n<i>DETAIL POSISI</i>\n<code>--------------------\nNo | BUY | TP\n--------------------\n"
             no = 1
@@ -287,10 +288,9 @@ def kirim_status_cantik():
         notif(msg)
     except Exception as e: notif(f"❌ ERROR STATUS: {e}")
 
-# ========== TELEGRAM ==========
 def kirim_keyboard():
     keyboard = {"keyboard": [[{"text": "STATUS"}]], "resize_keyboard": True}
-    requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Grid</b>\n\n<b>Perintah Ketik:</b>\n`PAPER` = Mode Simulasi\n`RILL` = Mode Real\n`SILENT` = Notif Penting\n`NORMAL` = Notif Lengkap\n`STATUS` = Lihat Posisi", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)})
+    requests.post(f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage", data={"chat_id": TELE_CHAT_ID, "text": "✅ <b>Panel Kontrol Grid V14.5.5</b>\n\n<b>Perintah:</b>\n`PAPER` = Simulasi\n`RILL` = Real\n`SILENT` / `NORMAL`\n`STATUS`", "parse_mode": "HTML", "reply_markup": json.dumps(keyboard)})
 
 def cek_tele():
     global NOTIF_MODE
@@ -302,17 +302,16 @@ def cek_tele():
 
         if text == "STATUS": kirim_status_cantik()
         elif text == "PAPER":
-            STATE["mode"]="PAPER"; save_state(); notif("🧪 <b>MODE PAPER AKTIF</b>\nMode RILL STOP\nSaldo Virtual: $10.000")
+            STATE["paper_mode"]=True; save_state(); notif("🧪 <b>MODE PAPER AKTIF</b>\nMode RILL DI STOP")
         elif text == "RILL":
             usdt, _ = get_balance()
-            STATE["mode"]="RILL"; save_state(); notif(f"💰 <b>MODE RILL AKTIF</b>\nMode PAPER STOP\nSaldo: ${usdt:.2f}\nHATI-HATI INI UANG BENERAN")
+            STATE["paper_mode"]=False; save_state(); notif(f"💰 <b>MODE RILL AKTIF</b>\nMode PAPER DI STOP\nSaldo: ${usdt:.2f}")
         elif text == "SILENT": NOTIF_MODE = "SILENT"; notif("🔇 <b>MODE SILENT</b>")
         elif text == "NORMAL": NOTIF_MODE = "NORMAL"; notif("🔊 <b>MODE NORMAL</b>")
-        else: notif("❓ Perintah tidak dikenal\nKetik: PAPER / RILL / SILENT / NORMAL / STATUS")
+        else: notif("❓ Perintah tidak dikenal")
         requests.get(f"https://api.telegram.org/bot{TELE_TOKEN}/getUpdates?offset={u['update_id']+1}")
     except Exception as e: log(f"TELE ERROR: {repr(e)}")
 
-# ========== MAIN ==========
 async def main():
     auto_setup_supabase()
     load_state()
@@ -323,7 +322,7 @@ async def main():
             if f['filterType']=='LOT_SIZE': BINANCE_RULES['min_qty']=float(f['minQty']); BINANCE_RULES['step_size']=float(f['stepSize'])
     except: log("Gagal load exchangeInfo")
 
-    notif(f"🤖 <b>BOT V14.5.0 PISAH PAPER/RILL</b>\nGrid: ${GRID_JARAK} | Mode Aktif: {STATE['mode']}")
+    notif(f"🤖 <b>BOT V14.5.5 ANTI CRASH</b>\nGrid: ${GRID_JARAK} | Mode: {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     kirim_keyboard()
 
     while True:
