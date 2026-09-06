@@ -97,7 +97,7 @@ def load_state():
         if r:
             data = r[0]['data']
             STATE["paper_mode"] = data.get("paper_mode", True)
-            STATE["paper_usdt"] = data.get("paper_usdt", 10000.0)
+            STATE["paper_usdt"] = data.get("paper_usdt", 1000.0)
             STATE["paper_btc"] = data.get("paper_btc", 0.0)
             STATE["last_buy_time"] = data.get("last_buy_time", 0)
             log(f"STATE LOADED: MODE {'PAPER' if STATE['paper_mode'] else 'RILL'}")
