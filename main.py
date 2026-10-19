@@ -126,16 +126,16 @@ def load_state():
     try:
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, timeout=5).json()
         if r:
-            data = r[0]['data']
-            STATE.update(data)
+            STATE.update(r[0]['data'])
             log(f"STATE LOADED: MODE {'PAPER' if STATE['paper_mode'] else 'RILL'}")
     except Exception as e: log(f"LOAD STATE ERROR: {e}")
 
 def save_state():
     try:
-        requests.patch(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}?id=eq.1", headers=SB_HEADERS, data=json.dumps({"data": STATE}), timeout=5)
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=representation"}
+        requests.post(f"{SUPABASE_URL}/rest/v1/{TABEL_STATE}", headers=headers, json={"id":1, "data": STATE}, timeout=5)
     except Exception as e: log(f"SAVE STATE ERROR: {e}")
-
+        
 def sb_select(filters=""):
     try:
         mode = "PAPER" if STATE["paper_mode"] else "RILL"
