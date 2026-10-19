@@ -44,7 +44,7 @@ GRID_JARAK = 250 # Default
 LAST_ATR_UPDATE = 0
 
 # ========== GLOBAL ==========
-STATE = {"paper_mode": True, "paper_usdt": 10000.0, "paper_btc": 0.0, "last_buy_time": 0}
+STATE = {"last_buy_time": 0}
 BINANCE_RULES = {'min_notional': 5.0, 'min_qty': 0.00001, 'step_size': 0.00001}
 BUYING_LOCK = set(); SELL_LOCK = set(); START_TIME = time.time(); LAST_SYNC = 0
 
